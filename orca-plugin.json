@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "backlog-tasks",
   "name": "Backlog Tasks",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Nulab Backlog in Orca: your issues, filters, details with linked issues and pull requests, attachments, and one-click hand-off to an agent with a skill.",
   "author": {
     "name": "ngxuancam",
@@ -11,6 +11,28 @@
   "repository": "https://github.com/ngxuancam/orca-backlog",
   "homepage": "https://nguyenxuancam.com",
   "license": "MIT",
+  "icon": "assets/icon.png",
+  "cover": {
+    "path": "assets/store/cover.png",
+    "alt": "Backlog for Orca: the sidebar panel with My Issues in dark and an issue detail in light"
+  },
+  "screenshots": [
+    {
+      "path": "assets/store/home.png",
+      "alt": "The dashboard in dark and light: projects and My Issues with due-date tabs",
+      "caption": "Your dashboard, like Backlog"
+    },
+    {
+      "path": "assets/store/detail.png",
+      "alt": "An issue with linked issues, a pull request and the agent hand-off, in dark and light",
+      "caption": "Everything about an issue"
+    },
+    {
+      "path": "assets/store/settings.png",
+      "alt": "Settings with two accounts and the account each Orca project uses, in dark and light",
+      "caption": "Several accounts, one per project"
+    }
+  ],
   "engines": {
     "orca": ">=1.4.259"
   },
