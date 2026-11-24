@@ -5,7 +5,7 @@
 **Your Nulab Backlog issues in Orca's sidebar.**<br>
 Find the ticket, read it, and hand it to an agent without leaving your workspace.
 
-[![Version](https://img.shields.io/github/v/tag/ngxuancam/orca-backlog?label=version&color=2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases)
+[![Version](https://img.shields.io/badge/version-v0.3.3-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
@@ -149,8 +149,8 @@ orca plugin dev watch . --check --json
 | `src/files.ts`    | Saving attachments, revealing and opening files              |
 | `src/orcaCli.ts`  | Installed agents and skills, as Orca lists them              |
 
-To release, set `version` in `orca-plugin.json` and `package.json`, merge, then push a `vX.Y.Z`
-tag: a workflow attaches the archives and checksums to the GitHub release, and the
+To release, run `npm run set-version X.Y.Z` (it sets the manifest, `package.json` and the README
+badge), merge, then push a `vX.Y.Z` tag: a workflow attaches the archives and checksums to the GitHub release, and the
 [Orca plugin directory](https://orca.dev/plugins/ngxuancam/orca-backlog) lists the new version.
 
 ## License
