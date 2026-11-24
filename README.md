@@ -114,9 +114,6 @@ orca plugin dev watch . --check --json
 | `src/files.ts`    | Saving attachments, revealing and opening files              |
 | `src/orcaCli.ts`  | Installed agents and skills, as Orca lists them              |
 
-Screenshots (`assets/`) come from the mock scenarios in `src/panel.check.ts` (a made-up "Acme Shop" space):
-`orca plugin shot . --scenario detail` (with Orca minimized).
-
 ## License
 
 [MIT](LICENSE) © ngxuancam
