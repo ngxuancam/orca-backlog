@@ -5,8 +5,8 @@
 **Your Nulab Backlog issues in Orca's sidebar.**<br>
 Find the ticket, read it, and hand it to an agent without leaving your workspace.
 
-[![Version](https://img.shields.io/github/v/tag/ngxuancam/orca-backlog?label=version&color=2c9a7a)](https://github.com/ngxuancam/orca-backlog/tags)
-[![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://github.com/ngxuancam/orca-backlog)
+[![Version](https://img.shields.io/github/v/tag/ngxuancam/orca-backlog?label=version&color=2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases)
+[![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
 <table>
@@ -17,7 +17,6 @@ Find the ticket, read it, and hand it to an agent without leaving your workspace
   </tr>
 </table>
 
-
 </div>
 
 ---
@@ -26,13 +25,12 @@ Find the ticket, read it, and hand it to an agent without leaving your workspace
 
 Working a Backlog ticket usually means a browser tab for the issue, another for the pull request,
 a download folder full of screenshots, and copy-pasting the description into your agent.
-Backlog for Orca puts all of it in Orca's right sidebar, drawn with Orca's own controls, and
-starts an agent on the ticket in one click.
+Backlog for Orca puts all of it in Orca's right sidebar, drawn with Orca's own controls in its
+light and dark themes, and starts an agent on the ticket in one click.
 
 ## Features
 
 ### 🏠 A dashboard like Backlog's
-
 
 - **Projects** you belong to; click one to open its issues with the project filter already set.
 - **My Issues**: *Assigned to me* / *Created by me*, then *All*, *4 Days*, *Due Today*, *Overdue*,
@@ -40,13 +38,13 @@ starts an agent on the ticket in one click.
 
 ### 🔎 Search and filters
 
-
 - Keyword search, **project**, **assignee** (you by default, anyone, or a teammate), **status**
   (Not closed, All, or one) and **priority**.
 - **Advanced filters**: issue type, category, version, milestone, registered by, resolution,
   subtasking, attached and shared — the same fields as Backlog's Advanced Search.
-- Sortable columns, paging as you scroll; filters fit one row on a wide panel and wrap when narrow.
-  Your filters are remembered.
+- Sortable columns and paging as you scroll. Filters share one row on a wide panel and wrap when
+  it's narrow, and they're remembered.
+- Teammates who share a display name show their login, so you pick the right one.
 
 ### 📄 Everything about an issue
 
@@ -58,9 +56,9 @@ starts an agent on the ticket in one click.
   </tr>
 </table>
 
-
-- Fields, description and comments rendered as Backlog shows them; each image in them is an
-  **Open preview** button that shows it in Orca's image preview.
+- Fields, description and comments rendered as Backlog shows them, line breaks included; each
+  image in them is an **Open preview** button that shows it in Orca's image preview.
+- The issue type badge takes the type's colour from Backlog (the nearest of Orca's tones).
 - **Linked issues**: parent, subtasks and related issues; open one and *Back* returns here.
 - **Pull requests** that link the issue, in any of the project's Git repositories, open ones included.
 - **Attachments**: images and videos open in Orca's preview; anything else is saved to
@@ -81,16 +79,20 @@ starts an agent on the ticket in one click.
   </tr>
 </table>
 
-
 - Add as many Backlog accounts as you need; switch from the header.
 - Each **Orca project remembers its account**: switch once while you're in it, or set it in ⚙ Settings.
   Moving to another workspace switches to its account by itself.
 
 ## Install
 
+Requires **Orca 1.4.259** or later, on macOS, Windows or Linux.
+
 ```sh
 orca plugin install ngxuancam/orca-backlog
 ```
+
+Or in Orca: **Settings → Plugins → Add plugin → From a Git URL…** and paste
+`https://github.com/ngxuancam/orca-backlog`.
 
 Orca shows the access the plugin asks for (its own storage and encrypted secrets, reading and
 opening your workspaces, creating worktrees, starting agents) and asks you to approve it.
@@ -104,17 +106,29 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
   saved, the plugin picks up its `BACKLOG_DOMAIN` / `BACKLOG_API_KEY` entry from an MCP config
   (`~/.claude.json`, Cursor, Windsurf, Claude Desktop, VS Code), so there's nothing to type.
 - Previews saved in a workspace go to `.orca-backlog/`, a folder git ignores on its own.
+- Very long descriptions or comments are shortened in the panel; *Open in Backlog* (top right)
+  shows the rest.
 
-## Privacy
+## Privacy and security
 
-The plugin talks to your Backlog space directly from your computer, with the same API calls
-nulab/backlog-mcp-server makes. API keys stay in Orca's encrypted plugin secrets; nothing is sent
-anywhere else.
+- The plugin talks to your Backlog space directly from your computer, with the same API calls
+  nulab/backlog-mcp-server makes. API keys stay in Orca's encrypted plugin secrets; nothing is
+  sent anywhere else, and there is no tracking.
+- It never writes into its own plugin folder, so Orca's integrity check of an installed copy
+  always holds.
+- Each [release](https://github.com/ngxuancam/orca-backlog/releases) has the source as `.zip` and
+  `.tar.gz` with `MD5SUMS`, `SHA1SUMS`, `SHA256SUMS` and `SHA512SUMS`:
+
+  ```sh
+  sha256sum -c SHA256SUMS --ignore-missing
+  ```
+
+- Dependabot watches dependencies and GitHub Actions; `main` only changes through pull requests.
 
 ## Develop
 
 ```sh
-npm i                      # typings only
+npm i                      # typings only; nothing here ships in the plugin
 npx tsc -p .
 orca plugin test . --json
 orca plugin check . --json
@@ -128,9 +142,13 @@ orca plugin dev watch . --check --json
 | `src/worker.ts`   | Request handlers                                             |
 | `src/backlog.ts`  | Backlog API client and credential discovery                  |
 | `src/accounts.ts` | Saved accounts and the account of each Orca project          |
-| `src/inline.ts`   | Backlog text to Markdown, image references to previews      |
+| `src/inline.ts`   | Backlog text to Markdown, image references to previews       |
 | `src/files.ts`    | Saving attachments, revealing and opening files              |
 | `src/orcaCli.ts`  | Installed agents and skills, as Orca lists them              |
+
+To release, set `version` in `orca-plugin.json` and `package.json`, merge, then push a `vX.Y.Z`
+tag: a workflow attaches the archives and checksums to the GitHub release, and the
+[Orca plugin directory](https://orca.dev/plugins/ngxuancam/orca-backlog) lists the new version.
 
 ## License
 
