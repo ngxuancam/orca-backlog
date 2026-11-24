@@ -1,7 +1,8 @@
 // The plugin's worker: every Backlog call, file and Orca action the panel asks for.
 // Orca starts it on the panel's first plugin.request; an idle worker stops, so accounts live in
 // storage and secrets (src/accounts.ts) and the active one is rebuilt on demand.
-import { join, relative } from 'node:path'
+import { isAbsolute, join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { accountId, accountStore } from './accounts'
 import { api, discoverCredentials, normalizeSpace, request, type Credentials, type Query } from './backlog'
@@ -9,6 +10,7 @@ import {
   attachmentKind,
   downloadsFolder,
   openWithOs,
+  pruneCache,
   revealInFolder,
   safeName,
   saveOnce,
@@ -35,6 +37,20 @@ const PAGE = 50
 /** Backlog's fixed id for "Closed"; every project has it. */
 const CLOSED = 4
 const PREVIEW_DIR = '.orca-backlog'
+const PLUGIN_ROOT = fileURLToPath(new URL('..', import.meta.url))
+
+/**
+ * Where previews go inside a workspace. Normally `.orca-backlog/`, a folder git ignores. When the
+ * workspace holds this plugin's own development folder, a file written there would reload the
+ * plugin mid-request, so they go under `node_modules/.cache/`, which Orca's dev watcher skips.
+ */
+function previewFolder(workspacePath: string): { dir: string; writeGitignore: boolean } {
+  const inside = relative(workspacePath, PLUGIN_ROOT)
+  const holdsPlugin = !inside.startsWith('..') && !isAbsolute(inside)
+  return holdsPlugin
+    ? { dir: join(PLUGIN_ROOT, 'node_modules', '.cache', 'orca-backlog'), writeGitignore: false }
+    : { dir: join(workspacePath, PREVIEW_DIR), writeGitignore: true }
+}
 
 type Named = { id: number; name: string }
 type Project = Named & { projectKey: string }
@@ -426,6 +442,19 @@ export default function activate(orca: OrcaWorkerApi): void {
     return ws && (ws.hostId === 'local' || ws.hostId === null) ? ws : null
   }
 
+  /** Preview folders this plugin has written to, cleaned on start and after each preview. */
+  const PREVIEW_FOLDERS = 'previewFolders'
+  async function rememberPreviewFolder(dir: string): Promise<void> {
+    const known = ((await orca.storage.get(PREVIEW_FOLDERS)) as string[] | null) ?? []
+    if (!known.includes(dir)) await orca.storage.set(PREVIEW_FOLDERS, [...known, dir].slice(-50))
+    void pruneCache(dir)
+  }
+  void (async () => {
+    const known = ((await orca.storage.get(PREVIEW_FOLDERS)) as string[] | null) ?? []
+    const removed = (await Promise.all(known.map((dir) => pruneCache(dir)))).reduce((a, b) => a + b, 0)
+    if (removed) orca.log(`cleaned ${removed} old preview folder(s)`)
+  })()
+
   orca.panels.handle('attachment.open', async ({ key, attachmentId }) => {
     const i = await issue(key)
     const file = i.attachments.find((a) => a.id === attachmentId)
@@ -436,10 +465,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (attachmentKind(name) !== 'file') {
       const ws = await focusedLocalWorkspace()
       if (ws) {
-        const dir = join(ws.path, PREVIEW_DIR)
-        await selfIgnoringFolder(dir)
+        const { dir, writeGitignore } = previewFolder(ws.path)
+        if (writeGitignore) await selfIgnoringFolder(dir)
         const path = join(dir, safeName(i.issueKey), name)
         await saveOnce(path, download, file.size)
+        await rememberPreviewFolder(dir)
         await orca.host.call('editor.open', { workspaceId: ws.id, path: relative(ws.path, path).replace(/\\/g, '/') })
         return { path, mode: 'preview' as const }
       }
