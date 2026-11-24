@@ -1,0 +1,50 @@
+# Attaches the plugin's source archives and their checksums to the GitHub release of each
+# version tag. Run it by hand for a tag that already exists.
+name: Release assets
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to attach assets to (e.g. v0.3.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Not a version tag: $TAG"; exit 1; }
+          version=$(git show "$TAG:orca-plugin.json" | jq -r .version)
+          [ "v$version" = "$TAG" ] || { echo "orca-plugin.json says $version, tag is $TAG"; exit 1; }
+
+      - name: Build archives and checksums
+        run: |
+          name="orca-backlog-$TAG"
+          mkdir dist
+          git archive --format=tar --prefix="$name/" "$TAG" | gzip -n -9 > "dist/$name.tar.gz"
+          git archive --format=zip --prefix="$name/" "$TAG" > "dist/$name.zip"
+          cd dist
+          md5sum    "$name".* > MD5SUMS
+          sha1sum   "$name".* > SHA1SUMS
+          sha256sum "$name".* > SHA256SUMS
+          sha512sum "$name".* > SHA512SUMS
+          cat SHA256SUMS
+
+      - name: Upload to the release
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" dist/* --clobber
