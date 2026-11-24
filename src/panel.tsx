@@ -11,7 +11,6 @@ import {
   Box,
   Heading,
   IconButton,
-  Image,
   Input,
   KeyValue,
   List,
@@ -52,6 +51,7 @@ import type {
   SortKey,
   Subtasking
 } from './protocol'
+import { ATTACHMENT_SCHEME } from './protocol'
 
 // --- State ---------------------------------------------------------------------------------------
 
@@ -141,7 +141,14 @@ const NO_SKILL = 'none'
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 const patch = <T extends object>(a: Atom<T>, part: Partial<T>) => set(a, { ...read(a), ...part })
-const withAll = (label: string, options: readonly Option[]): Option[] => [{ value: 'all', label }, ...options]
+/** Orca refuses to draw a Select with more than 500 options. */
+const MAX_SELECT_OPTIONS = 500
+/** `fixed` first, then as many of `rest` as a Select can hold. */
+const fitOptions = (fixed: readonly Option[], rest: readonly Option[]): Option[] => [
+  ...fixed,
+  ...rest.slice(0, MAX_SELECT_OPTIONS - fixed.length).map(({ value, label }) => ({ value, label }))
+]
+const withAll = (label: string, options: readonly Option[]): Option[] => fitOptions([{ value: 'all', label }], options)
 
 /** `{ [name]: value }`, or nothing for "all": the bridge refuses fields set to undefined. */
 const picked = <K extends string>(name: K, value: string) =>
@@ -673,7 +680,7 @@ function LoginView() {
       <Stack gap="sm">
         <AccountForm />
         <Text muted size="xs">
-          Also read automatically from BACKLOG_DOMAIN / BACKLOG_API_KEY, or a backlog-mcp-server entry in your MCP config.
+          Already set up backlog-mcp-server? Its MCP config entry is picked up automatically.
         </Text>
       </Stack>
     </Card>
@@ -887,11 +894,13 @@ function IssuesView({ me }: { me: Session }) {
           label="Assignee"
           labelHidden
           value={f.assignee}
-          options={[
-            { value: 'me', label: 'Assigned to me' },
-            { value: 'all', label: 'Any assignee' },
-            ...(m?.users ?? []).filter((u) => u.value !== String(me.me.id))
-          ]}
+          options={fitOptions(
+            [
+              { value: 'me', label: 'Assigned to me' },
+              { value: 'all', label: 'Any assignee' }
+            ],
+            (m?.users ?? []).filter((u) => u.value !== String(me.me.id))
+          )}
           onChange={(assignee) => setFilter({ assignee })}
         />
         <Select
@@ -931,12 +940,12 @@ function LaunchCard({ issue }: { issue: IssueDetail }) {
     <Card title="Assign to an agent">
       <Stack gap="sm">
         <FilterRow>
-          <Select label="Workspace" value={c.target} options={options.targets} onChange={(target) => patch(choice, { target })} />
+          <Select label="Workspace" value={c.target} options={fitOptions([], options.targets)} onChange={(target) => patch(choice, { target })} />
           <Select label="Agent" value={c.agent} options={options.agents} onChange={(agent) => patch(choice, { agent })} />
           <Select
             label="Skill"
             value={c.skill || NO_SKILL}
-            options={[{ value: NO_SKILL, label: 'No skill' }, ...skills.slice(0, 499).map(({ value, label }) => ({ value, label }))]}
+            options={fitOptions([{ value: NO_SKILL, label: 'No skill' }], skills)}
             onChange={(skill) => patch(choice, { skill: skill === NO_SKILL ? '' : skill })}
           />
         </FilterRow>
@@ -976,30 +985,26 @@ function DetailView({ issueKey }: { issueKey: string }) {
   )
 }
 
-/** A cached inline image: `![alt](<plugin file>)`; its name starts with the attachment id. */
-const INLINE_IMAGE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
+/** An image reference the worker rewrote: `![alt](attachment:<id>)`. */
+const ATTACHMENT_IMAGE = new RegExp(String.raw`!\[([^\]]*)\]\(` + ATTACHMENT_SCHEME + String.raw`(\d+)\)`, 'g')
 
 /**
- * Backlog text with its images drawn at a fixed size, each with a button that opens it in
- * Orca's image preview (Markdown alone can neither size nor click them).
+ * Backlog text with each image reference as a button that opens the image in Orca's preview.
+ * Inline pictures would need files inside the plugin folder, which an installed plugin must not change.
  */
 function RichText({ content, issueKey }: { content: string; issueKey: string }) {
   const parts: OrcaNode[] = []
   let last = 0
-  for (const match of content.matchAll(INLINE_IMAGE)) {
-    const [whole, alt, src] = match
+  for (const match of content.matchAll(ATTACHMENT_IMAGE)) {
+    const [whole, alt, id] = match
     const text = content.slice(last, match.index)
     if (text.trim()) parts.push(<Markdown key={`t${last}`} content={text} />)
-    const id = Number(/(?:^|\/)(\d+)-[^/]*$/.exec(decodeURIComponent(src!))?.[1])
     parts.push(
-      <Stack key={`i${match.index}`} gap="xs" align="start">
-        <Image src={src!} alt={alt || 'Image'} size="md" fit="contain" rounded />
-        {id ? (
-          <Button size="xs" variant="ghost" icon="expand" onPress={() => openAttachment(issueKey, id)}>
-            Open preview
-          </Button>
-        ) : null}
-      </Stack>
+      <Row key={`i${match.index}`}>
+        <Button size="sm" variant="outline" icon="file" onPress={() => openAttachment(issueKey, Number(id))}>
+          {`Open preview · ${alt || 'image'}`}
+        </Button>
+      </Row>
     )
     last = match.index! + whole!.length
   }

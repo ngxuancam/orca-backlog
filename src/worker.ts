@@ -14,7 +14,7 @@ import {
   saveOnce,
   selfIgnoringFolder
 } from './files'
-import { backlogMarkdown, cachedImages, publishImages } from './inline'
+import { backlogMarkdown } from './inline'
 import { installedAgents, installedSkills } from './orcaCli'
 import type {
   Account,
@@ -123,7 +123,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     return account
   }
 
-  /** With no saved account: the 0.1 login, then the environment, then MCP configs. */
+  /** With no saved account: the 0.1 login, then a backlog-mcp-server entry in MCP configs. */
   async function importFound(): Promise<string | undefined> {
     const legacy = await accounts.legacy()
     const found = [...(legacy ? [{ creds: legacy }] : []), ...(await discoverCredentials())]
@@ -391,22 +391,12 @@ export default function activate(orca: OrcaWorkerApi): void {
       get<Comment[]>(`/issues/${encodeURIComponent(key)}/comments`, { order: 'desc', count: 20 })
     ])
     const texts = comments.filter((c) => c.content?.trim()).reverse()
-    const [{ srcByName: images, missing }, links, pullRequests] = await Promise.all([
-      cachedImages(i.issueKey, i.attachments, [i.description ?? '', ...texts.map((c) => c.content!)]),
-      linksOf(i),
-      pullRequestsOf(i)
-    ])
-    // Not awaited: the answer goes out now; the images show after the reload their arrival causes.
-    if (missing.length) {
-      void publishImages(i.issueKey, missing, (id) => downloadAttachment(i.issueKey, id)).catch((e) =>
-        orca.log(`inline images for ${i.issueKey}: ${(e as Error).message}`)
-      )
-    }
+    const [links, pullRequests] = await Promise.all([linksOf(i), pullRequestsOf(i)])
     return {
       ...toRow(i),
       url: `https://${current!.creds.space}/view/${i.issueKey}`,
       projectId: i.projectId,
-      description: backlogMarkdown(i.description ?? '', images),
+      description: backlogMarkdown(i.description ?? '', i.attachments),
       assignee: i.assignee?.name ?? null,
       createdUser: i.createdUser?.name ?? null,
       created: Date.parse(i.created),
@@ -417,7 +407,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       comments: texts.map((c) => ({
         id: c.id,
         author: c.createdUser.name,
-        content: backlogMarkdown(c.content!, images),
+        content: backlogMarkdown(c.content!, i.attachments),
         created: Date.parse(c.created)
       })),
       ...links,
