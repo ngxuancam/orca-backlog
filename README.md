@@ -118,6 +118,8 @@ orca plugin dev watch . --check --json
 
 [MIT](LICENSE) © ngxuancam
 
+Backlog is a product of Nulab Inc. This plugin is an independent project, not made or endorsed by Nulab.
+
 ---
 
 <div align="center">

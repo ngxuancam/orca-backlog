@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "backlog-tasks",
   "name": "Backlog Tasks",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Nulab Backlog in Orca: your issues, filters, details with linked issues and pull requests, attachments, and one-click hand-off to an agent with a skill.",
   "author": {
     "name": "ngxuancam",
