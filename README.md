@@ -105,7 +105,8 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
 - **Already use [backlog-mcp-server](https://github.com/nulab/backlog-mcp-server)?** With no account
   saved, the plugin picks up its `BACKLOG_DOMAIN` / `BACKLOG_API_KEY` entry from an MCP config
   (`~/.claude.json`, Cursor, Windsurf, Claude Desktop, VS Code), so there's nothing to type.
-- Previews saved in a workspace go to `.orca-backlog/`, a folder git ignores on its own.
+- Previews saved in a workspace go to `.orca-backlog/`, a folder git ignores on its own. It cleans
+  itself: an issue's previews go after 7 days unopened, and the folder stays under 200 MB.
 - Very long descriptions or comments are shortened in the panel; *Open in Backlog* (top right)
   shows the rest.
 
