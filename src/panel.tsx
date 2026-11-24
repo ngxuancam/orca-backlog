@@ -170,6 +170,23 @@ const COLUMNS: Record<string, TableColumn> = {
 const STATUS_TONE: Record<number, Tone> = { 1: 'danger', 2: 'accent', 3: 'success', 4: 'neutral' }
 const statusTone = (id: number): Tone => STATUS_TONE[id] ?? 'warning'
 
+/** Backlog's issue type colour, as the nearest of the tones Orca can draw. */
+export function toneOfColor(hex: string | null): Tone {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex ?? '')
+  if (!m) return 'neutral'
+  const [r, g, b] = [m[1], m[2], m[3]].map((x) => parseInt(x!, 16) / 255) as [number, number, number]
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  if (max - min < 0.15) return 'neutral' // grey
+  const d = max - min
+  const hue = (max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4) * 60
+  const h = (hue + 360) % 360
+  if (h < 12 || h >= 300) return 'danger'
+  if (h < 60) return 'warning'
+  if (h < 170) return 'success'
+  return 'neutral'
+}
+
 const ATTACHMENT_ICON = { image: 'file', video: 'play', file: 'download' } as const
 const ATTACHMENT_ACTION = { image: 'Preview in Orca', video: 'Preview in Orca', file: 'Download and open folder' } as const
 
@@ -1045,7 +1062,7 @@ function IssueBody({ issue }: { issue: IssueDetail }) {
     <Stack gap="sm">
       <Text weight="semibold">{issue.summary}</Text>
       <Row gap="xs" wrap>
-        <Badge>{issue.type}</Badge>
+        <Badge tone={toneOfColor(issue.typeColor)}>{issue.type}</Badge>
         <Badge tone={statusTone(issue.statusId)}>{issue.status}</Badge>
         {issue.priority ? <Badge tone={issue.priority === 'High' ? 'danger' : 'neutral'}>{issue.priority}</Badge> : null}
       </Row>

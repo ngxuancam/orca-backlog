@@ -34,6 +34,7 @@ const row = (key: string, summary: string, statusId: number, priority: string, d
   statusId,
   priority,
   type: 'Task',
+  typeColor: '#a1af2f',
   due,
   updated: now - ago * hour
 })
@@ -49,6 +50,7 @@ const rows: IssueRow[] = [
 const detail: IssueDetail = {
   ...rows[0]!,
   type: 'Bug',
+  typeColor: '#ea733b',
   url: 'https://acme.backlog.com/view/SHOP-142',
   projectId: 10,
   description: [

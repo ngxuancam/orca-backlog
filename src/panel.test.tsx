@@ -1,6 +1,7 @@
 // `orca plugin test .` runs this in Node with the same runtime and checks Orca uses.
 import { afterEach, assert, mockHost, mount, test, type TestPanel } from 'orca/testing'
 import * as panel from './panel'
+import { toneOfColor } from './panel'
 import type { AuthState, IssueDetail, Session } from './protocol'
 
 let view: TestPanel | undefined
@@ -9,7 +10,7 @@ afterEach(() => view?.unmount())
 const session: Session = { accountId: 'a1', space: 'acme.backlog.com', me: { id: 7, name: 'Me', userId: 'me' } }
 const accounts = [{ id: 'a1', space: 'acme.backlog.com', name: 'Me' }]
 const state = (s: Session | null): AuthState => ({ session: s, accounts: s ? accounts : [], orcaProject: null })
-const row = { key: 'APP-1', summary: 'Fix login', status: 'Open', statusId: 1, priority: 'High', type: 'Bug', due: null, updated: 0 }
+const row = { key: 'APP-1', summary: 'Fix login', status: 'Open', statusId: 1, priority: 'High', type: 'Bug', typeColor: '#ea733b', due: null, updated: 0 }
 const detail: IssueDetail = {
   ...row,
   url: 'https://acme.backlog.com/view/APP-1',
@@ -161,4 +162,14 @@ test('inline images draw at a fixed size and open the preview', async () => {
   await view.press({ role: 'button', text: 'Open preview' })
   assert.deepEqual(opened, { key: 'APP-1', attachmentId: 5 })
   assert.deepEqual(view.errors, [])
+})
+
+test('issue type colours map to the nearest Orca tone', () => {
+  assert.equal(toneOfColor('#ea733b'), 'warning') // orange
+  assert.equal(toneOfColor('#e30000'), 'danger')
+  assert.equal(toneOfColor('#a1af2f'), 'success') // olive green
+  assert.equal(toneOfColor('#990000'), 'danger')
+  assert.equal(toneOfColor('#666666'), 'neutral')
+  assert.equal(toneOfColor('#3b9dbd'), 'neutral') // blue
+  assert.equal(toneOfColor(null), 'neutral')
 })

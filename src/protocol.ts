@@ -88,6 +88,8 @@ export type IssueRow = {
   statusId: number
   priority: string
   type: string
+  /** The issue type's colour in Backlog, `#rrggbb`. */
+  typeColor: string | null
   due: string | null
   updated: number
 }

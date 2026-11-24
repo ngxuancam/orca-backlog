@@ -44,7 +44,7 @@ type Issue = {
   issueKey: string
   summary: string
   description: string | null
-  issueType: Named
+  issueType: Named & { color?: string }
   status: Named
   priority: Named | null
   assignee: Named | null
@@ -79,6 +79,7 @@ const toRow = (i: Issue): IssueRow => ({
   statusId: i.status.id,
   priority: i.priority?.name ?? '',
   type: i.issueType.name,
+  typeColor: i.issueType.color ?? null,
   due: day(i.dueDate),
   updated: Date.parse(i.updated)
 })
@@ -199,21 +200,31 @@ export default function activate(orca: OrcaWorkerApi): void {
   const projects = () => cached('projects', () => get<Project[]>('/projects', { archived: false }))
   const statusesOf = (projectId: number) => cached(`statuses:${projectId}`, () => get<Named[]>(`/projects/${projectId}/statuses`))
   const priorities = () => cached('priorities', () => get<Named[]>('/priorities'))
-  const resolutions = () => cached('resolutions', () => get<Named[]>('/resolutions'))
+  // Advanced-filter lists are optional: one that fails leaves only its own dropdown empty.
+  const resolutions = () => cached('resolutions', () => get<Named[]>('/resolutions')).catch(() => [] as Named[])
   /** A project's own lists for the advanced filters; none without one project chosen. */
   const ofProject = (projectId: string | undefined, what: 'issueTypes' | 'categories' | 'versions') =>
     projectId
-      ? cached(`${what}:${projectId}`, () => get<Named[]>(`/projects/${projectId}/${what}`)).then(options)
+      ? cached(`${what}:${projectId}`, () => get<Named[]>(`/projects/${projectId}/${what}`))
+          .then(options)
+          .catch(() => [] as Option[])
       : Promise.resolve([] as Option[])
-  const usersOf = (projectId: number) => cached(`users:${projectId}`, () => get<Named[]>(`/projects/${projectId}/users`))
+  const usersOf = (projectId: number) =>
+    cached(`users:${projectId}`, () => get<(Named & { userId: string | null })[]>(`/projects/${projectId}/users`))
 
   /** Members of one project, or of every project, by name. */
   async function userOptions(projectId?: string): Promise<Option[]> {
     const lists = projectId
       ? [await usersOf(Number(projectId))]
       : await Promise.all((await projects()).map((p) => usersOf(p.id)))
-    const byId = new Map(lists.flat().map((u) => [u.id, u]))
-    return options([...byId.values()].sort((a, b) => a.name.localeCompare(b.name)))
+    const users = [...new Map(lists.flat().map((u) => [u.id, u])).values()].sort((a, b) => a.name.localeCompare(b.name))
+    // Two people can share a display name: the login tells them apart.
+    const named = new Map<string, number>()
+    for (const u of users) named.set(u.name, (named.get(u.name) ?? 0) + 1)
+    return users.map((u) => ({
+      value: String(u.id),
+      label: (named.get(u.name) ?? 0) > 1 ? `${u.name} (${u.userId ?? u.id})` : u.name
+    }))
   }
 
   /** Statuses of one project, or of all projects merged by name (`value` lists every id). */

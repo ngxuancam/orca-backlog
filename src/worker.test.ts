@@ -38,6 +38,11 @@ function stubBacklog(): URL[] {
       { id: 4, name: 'Closed' }
     ],
     '/api/v2/priorities': [{ id: 2, name: 'High' }],
+    '/api/v2/projects/10/users': [
+      { id: 7, userId: 'me', name: 'Me' },
+      { id: 11, userId: 'trangtth', name: 'Trang' },
+      { id: 12, userId: 'trangttm6', name: 'Trang' }
+    ],
     '/api/v2/issues': [issue],
     '/api/v2/issues/count': { count: 1 },
     '/api/v2/issues/APP-1': issue,
@@ -163,4 +168,14 @@ test('the agent prompt names the skill and the issue', () => {
   assert.match(prompt, /^Use the "code-review" skill/)
   assert.match(prompt, /APP-1: Fix login/)
   assert.match(prompt, /Attachments: shot\.png/)
+})
+
+test('members who share a name are told apart by their login', async () => {
+  stubBacklog()
+  const worker = await mountWorker(main, { host: saved() })
+  const meta = await worker.request('meta.get', { projectId: '10' })
+  assert.deepEqual(
+    meta.users.map((u) => u.label),
+    ['Me', 'Trang (trangtth)', 'Trang (trangttm6)']
+  )
 })
