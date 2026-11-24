@@ -9,13 +9,7 @@ Find the ticket, read it, and hand it to an agent without leaving your workspace
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
-<table>
-  <tr><th>Dark</th><th>Light</th></tr>
-  <tr>
-    <td><img src="assets/home-dark.png" alt="Backlog for Orca: projects and my issues, dark theme" width="400"></td>
-    <td><img src="assets/home-light.png" alt="Backlog for Orca: projects and my issues, light theme" width="400"></td>
-  </tr>
-</table>
+<img src="assets/store/cover.png" alt="Backlog for Orca: the sidebar panel with My Issues in dark and an issue detail in light" width="100%">
 
 </div>
 
@@ -31,6 +25,14 @@ light and dark themes, and starts an agent on the ticket in one click.
 ## Features
 
 ### 🏠 A dashboard like Backlog's
+
+<table>
+  <tr><th>Dark</th><th>Light</th></tr>
+  <tr>
+    <td><img src="assets/home-dark.png" alt="Backlog for Orca: projects and my issues, dark theme" width="400"></td>
+    <td><img src="assets/home-light.png" alt="Backlog for Orca: projects and my issues, light theme" width="400"></td>
+  </tr>
+</table>
 
 - **Projects** you belong to; click one to open its issues with the project filter already set.
 - **My Issues**: *Assigned to me* / *Created by me*, then *All*, *4 Days*, *Due Today*, *Overdue*,
