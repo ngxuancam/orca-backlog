@@ -122,11 +122,11 @@ const requests = {
 
 export default defineCheck({
   signedOut: { requests: { 'auth.status': () => ({ session: null, accounts: [], orcaProject: null }) } },
-  home: { requests },
+  home: { requests, persisted: { plugin: { screen: 'home', openKey: null } } },
   issues: {
     requests,
-    persisted: { plugin: { screen: 'issues', advancedOpen: true, issueFilters: { projectId: '10', categoryId: '30' } } }
+    persisted: { plugin: { screen: 'issues', openKey: null, advancedOpen: true, issueFilters: { projectId: '10', categoryId: '30' } } }
   },
-  detail: { requests, persisted: { plugin: { openKey: 'SHOP-142' } } },
-  settings: { requests, persisted: { plugin: { screen: 'settings' } } }
+  detail: { requests, persisted: { plugin: { screen: 'home', openKey: 'SHOP-142' } } },
+  settings: { requests, persisted: { plugin: { screen: 'settings', openKey: null } } }
 })

@@ -9,6 +9,8 @@ Find the ticket, read it, and hand it to an agent without leaving your workspace
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://github.com/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
+<img src="assets/home.png" alt="Backlog for Orca: projects and my issues" width="420">
+
 
 </div>
 
@@ -42,6 +44,8 @@ starts an agent on the ticket in one click.
 
 ### 📄 Everything about an issue
 
+<img src="assets/detail.png" alt="Issue detail with linked issues, pull requests and the agent hand-off" width="420">
+
 
 - Fields, description and comments rendered as Backlog shows them, **images inline**.
 - **Linked issues**: parent, subtasks and related issues; open one and *Back* returns here.
@@ -55,6 +59,8 @@ starts an agent on the ticket in one click.
 - Your last agent, skill and workspace are remembered for the next ticket.
 
 ### 👥 Several accounts
+
+<img src="assets/settings.png" alt="Settings: accounts and the account each Orca project uses" width="420">
 
 
 - Add as many Backlog accounts as you need; switch from the header.
@@ -108,7 +114,7 @@ orca plugin dev watch . --check --json
 | `src/files.ts`    | Saving attachments, revealing and opening files              |
 | `src/orcaCli.ts`  | Installed agents and skills, as Orca lists them              |
 
-Screenshots come from the mock scenarios in `src/panel.check.ts` (a made-up "Acme Shop" space):
+Screenshots (`assets/`) come from the mock scenarios in `src/panel.check.ts` (a made-up "Acme Shop" space):
 `orca plugin shot . --scenario detail` (with Orca minimized).
 
 ## License
