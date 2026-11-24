@@ -1,0 +1,51 @@
+{
+  "manifestVersion": 2,
+  "id": "backlog-tasks",
+  "name": "Backlog Tasks",
+  "version": "0.2.0",
+  "description": "Nulab Backlog in Orca: your issues, filters, details with linked issues and pull requests, attachments, and one-click hand-off to an agent with a skill.",
+  "author": {
+    "name": "ngxuancam",
+    "url": "https://nguyenxuancam.com"
+  },
+  "repository": "https://github.com/ngxuancam/orca-backlog",
+  "homepage": "https://nguyenxuancam.com",
+  "license": "MIT",
+  "engines": {
+    "orca": ">=1.4.259"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      {
+        "id": "backlog-tasks",
+        "title": "Backlog Tasks",
+        "icon": "layers",
+        "entry": "src/panel.tsx",
+        "ui": "components"
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "secrets:own"
+    },
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "workspace:write"
+    },
+    {
+      "kind": "workspace:create"
+    },
+    {
+      "kind": "agent:launch"
+    }
+  ]
+}

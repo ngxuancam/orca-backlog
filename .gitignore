@@ -1,0 +1,6 @@
+node_modules/
+.orca/
+.cache/
+.orca-backlog/
+*.log
+.env*
