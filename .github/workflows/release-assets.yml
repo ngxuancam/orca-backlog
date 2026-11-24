@@ -30,6 +30,7 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Not a version tag: $TAG"; exit 1; }
           version=$(git show "$TAG:orca-plugin.json" | jq -r .version)
           [ "v$version" = "$TAG" ] || { echo "orca-plugin.json says $version, tag is $TAG"; exit 1; }
+          git show "$TAG:README.md" | grep -q "img.shields.io/badge/version-$TAG-" || { echo "README version badge does not say $TAG (run npm run set-version)"; exit 1; }
 
       - name: Build archives and checksums
         run: |

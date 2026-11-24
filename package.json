@@ -5,7 +5,8 @@
   "scripts": {
     "typecheck": "tsc -p .",
     "test": "orca plugin test . --json",
-    "check": "orca plugin check . --json"
+    "check": "orca plugin check . --json",
+    "set-version": "node scripts/set-version.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
