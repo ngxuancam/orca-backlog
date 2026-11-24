@@ -1,0 +1,21 @@
+# Dependabot: weekly pull requests when an npm package has an update, and right away when
+# one has a security advisory. The plugin ships no runtime dependencies; these are the
+# type-checking tools (typescript, @types/node).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: deps
+    groups:
+      dev-tools:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
