@@ -147,20 +147,45 @@ test('advanced filters narrow the list and reset with the project', async () => 
   assert.deepEqual(view.errors, [])
 })
 
-test('inline images draw at a fixed size and open the preview', async () => {
+test('image references in issue text open the preview', async () => {
   let opened: unknown
   view = await mount(panel, {
     host: host(true, {
-      'issue.get': () => ({ ...detail, description: 'Before\n\n![shot](.cache/backlog-inline/APP-1/5-shot.png)\n\nAfter' }),
+      'issue.get': () => ({ ...detail, description: 'Before\n\n![shot.png](attachment:5)\n\nAfter' }),
       'attachment.open': (input) => ((opened = input), { path: 'x', mode: 'preview' })
     }),
     persisted: { plugin: { openKey: 'APP-1' } }
   })
   await view.settled()
-  assert.ok(view.find({ type: 'Image' }))
   assert.ok(view.find({ text: 'After' }))
-  await view.press({ role: 'button', text: 'Open preview' })
+  await view.press({ role: 'button', text: 'Open preview · shot.png' })
   assert.deepEqual(opened, { key: 'APP-1', attachmentId: 5 })
+  assert.deepEqual(view.errors, [])
+})
+
+test('a Select never gets more than 500 options', async () => {
+  const many = Array.from({ length: 700 }, (_, i) => ({ value: String(i + 100), label: `User ${i}` }))
+  view = await mount(panel, {
+    host: host(true, {
+      'meta.get': () => ({ projects: [{ value: '10', label: 'App (APP)' }], statuses: [], priorities: [], users: many, resolutions: [], issueTypes: [], categories: [], versions: [] })
+    }),
+    persisted: { plugin: { screen: 'issues', openKey: null } }
+  })
+  await view.settled()
+  type Node = { props?: { label?: string; options?: unknown[] }; children?: unknown[] }
+  const find = (node: unknown): Node | null => {
+    if (!node || typeof node !== 'object') return null
+    const n = node as Node
+    if (n.props?.label === 'Assignee' && Array.isArray(n.props.options)) return n
+    for (const child of n.children ?? []) {
+      const hit = find(child)
+      if (hit) return hit
+    }
+    return null
+  }
+  const assignee = find(view.tree())
+  assert.ok(assignee, 'assignee select drawn')
+  assert.equal(assignee!.props!.options!.length, 500)
   assert.deepEqual(view.errors, [])
 })
 

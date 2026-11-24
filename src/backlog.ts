@@ -80,11 +80,12 @@ function mcpConfigFiles(): string[] {
   ]
 }
 
-/** Credentials from the environment, then from MCP configs; each source is tried in order. */
-export async function discoverCredentials(): Promise<{ creds: Credentials; source: 'env' | 'mcp-config' }[]> {
-  const found: { creds: Credentials; source: 'env' | 'mcp-config' }[] = []
-  const fromEnv = pairFrom(process.env)
-  if (fromEnv) found.push({ creds: fromEnv, source: 'env' })
+/**
+ * Credentials from backlog-mcp-server entries in MCP client configs, in order. Not from the
+ * environment: Orca withholds tokens from plugin workers (docs/reference/plugin-authoring.md).
+ */
+export async function discoverCredentials(): Promise<{ creds: Credentials; source: 'mcp-config' }[]> {
+  const found: { creds: Credentials; source: 'mcp-config' }[] = []
   for (const file of mcpConfigFiles()) {
     const text = await readFile(file, 'utf8').catch(() => null)
     if (!text) continue

@@ -59,7 +59,8 @@ starts an agent on the ticket in one click.
 </table>
 
 
-- Fields, description and comments rendered as Backlog shows them, **images inline**.
+- Fields, description and comments rendered as Backlog shows them; each image in them is an
+  **Open preview** button that shows it in Orca's image preview.
 - **Linked issues**: parent, subtasks and related issues; open one and *Back* returns here.
 - **Pull requests** that link the issue, in any of the project's Git repositories, open ones included.
 - **Attachments**: images and videos open in Orca's preview; anything else is saved to
@@ -100,9 +101,8 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
 ## Tips
 
 - **Already use [backlog-mcp-server](https://github.com/nulab/backlog-mcp-server)?** With no account
-  saved, the plugin picks up `BACKLOG_DOMAIN` / `BACKLOG_API_KEY` from the environment or from an MCP
-  config (`~/.claude.json`, Cursor, Windsurf, Claude Desktop, VS Code), so there's nothing to type.
-- **Images over 1 MB** don't draw inline; open them from *Attachments* for the full preview.
+  saved, the plugin picks up its `BACKLOG_DOMAIN` / `BACKLOG_API_KEY` entry from an MCP config
+  (`~/.claude.json`, Cursor, Windsurf, Claude Desktop, VS Code), so there's nothing to type.
 - Previews saved in a workspace go to `.orca-backlog/`, a folder git ignores on its own.
 
 ## Privacy
@@ -128,7 +128,7 @@ orca plugin dev watch . --check --json
 | `src/worker.ts`   | Request handlers                                             |
 | `src/backlog.ts`  | Backlog API client and credential discovery                  |
 | `src/accounts.ts` | Saved accounts and the account of each Orca project          |
-| `src/inline.ts`   | Backlog text to Markdown, inline images                      |
+| `src/inline.ts`   | Backlog text to Markdown, image references to previews      |
 | `src/files.ts`    | Saving attachments, revealing and opening files              |
 | `src/orcaCli.ts`  | Installed agents and skills, as Orca lists them              |
 

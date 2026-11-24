@@ -2,6 +2,9 @@
 
 export type Option = { value: string; label: string }
 
+/** An image reference in issue text: `![alt](attachment:<id>)`, drawn as an Open preview button. */
+export const ATTACHMENT_SCHEME = 'attachment:'
+
 /** A saved Backlog login: one user in one space. */
 export type Account = { id: string; space: string; name: string }
 
