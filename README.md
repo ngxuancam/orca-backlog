@@ -9,7 +9,13 @@ Find the ticket, read it, and hand it to an agent without leaving your workspace
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://github.com/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
-<img src="assets/home.png" alt="Backlog for Orca: projects and my issues" width="420">
+<table>
+  <tr><th>Dark</th><th>Light</th></tr>
+  <tr>
+    <td><img src="assets/home-dark.png" alt="Backlog for Orca: projects and my issues, dark theme" width="400"></td>
+    <td><img src="assets/home-light.png" alt="Backlog for Orca: projects and my issues, light theme" width="400"></td>
+  </tr>
+</table>
 
 
 </div>
@@ -44,7 +50,13 @@ starts an agent on the ticket in one click.
 
 ### 📄 Everything about an issue
 
-<img src="assets/detail.png" alt="Issue detail with linked issues, pull requests and the agent hand-off" width="420">
+<table>
+  <tr><th>Dark</th><th>Light</th></tr>
+  <tr>
+    <td><img src="assets/detail-dark.png" alt="Issue detail with linked issues, pull requests and the agent hand-off, dark theme" width="400"></td>
+    <td><img src="assets/detail-light.png" alt="Issue detail with linked issues, pull requests and the agent hand-off, light theme" width="400"></td>
+  </tr>
+</table>
 
 
 - Fields, description and comments rendered as Backlog shows them, **images inline**.
@@ -60,7 +72,13 @@ starts an agent on the ticket in one click.
 
 ### 👥 Several accounts
 
-<img src="assets/settings.png" alt="Settings: accounts and the account each Orca project uses" width="420">
+<table>
+  <tr><th>Dark</th><th>Light</th></tr>
+  <tr>
+    <td><img src="assets/settings-dark.png" alt="Settings: accounts and the account each Orca project uses, dark theme" width="400"></td>
+    <td><img src="assets/settings-light.png" alt="Settings: accounts and the account each Orca project uses, light theme" width="400"></td>
+  </tr>
+</table>
 
 
 - Add as many Backlog accounts as you need; switch from the header.
