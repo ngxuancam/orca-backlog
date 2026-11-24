@@ -8,7 +8,7 @@
     "check": "orca plugin check . --json"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^24.19.2",
     "typescript": "^7.0.2"
   },
   "version": "0.3.0",
