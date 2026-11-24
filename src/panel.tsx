@@ -911,10 +911,10 @@ function LaunchCard({ issue }: { issue: IssueDetail }) {
   if (!options) return <Spinner label="Loading agents and skills" />
   const skills = options.skills.filter((s) => !s.providers.length || s.providers.includes(c.agent))
   return (
-    <Card title="Assign to an agent" description="Starts the agent with this issue as its task.">
+    <Card title="Assign to an agent">
       <Stack gap="sm">
-        <Select label="Workspace" value={c.target} options={options.targets} onChange={(target) => patch(choice, { target })} />
         <FilterRow>
+          <Select label="Workspace" value={c.target} options={options.targets} onChange={(target) => patch(choice, { target })} />
           <Select label="Agent" value={c.agent} options={options.agents} onChange={(agent) => patch(choice, { agent })} />
           <Select
             label="Skill"
