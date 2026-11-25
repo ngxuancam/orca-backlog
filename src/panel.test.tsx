@@ -200,6 +200,10 @@ test('comments and changes fields in one save; a comment alone is a comment', as
   })
   await view.settled()
   await view.activateRow({ type: 'Table' }, 'APP-1')
+  // The sheet at the bottom opens on demand; the summary is not part of it.
+  assert.equal(view.find({ label: 'Comment' }), null)
+  await view.press({ role: 'button', text: 'Update issue' })
+  assert.equal(view.find({ label: 'Summary' }), null)
   assert.equal(view.find({ role: 'button', text: 'Comment' })?.props.disabled, true)
   await view.type({ label: 'Comment' }, 'Looking into it')
   await view.press({ role: 'button', text: 'Comment' })
@@ -214,6 +218,44 @@ test('comments and changes fields in one save; a comment alone is a comment', as
   // The form starts again from what Backlog answered.
   assert.equal(view.valueOf({ label: 'Comment' }), '')
   assert.equal(view.valueOf({ label: 'Status' }), '2')
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+})
+
+test('the header edits the summary and description in place, apart from the sheet', async () => {
+  const updates: unknown[] = []
+  view = await mount(panel, {
+    host: host(true, {
+      'issue.update': (input: { key: string; changes: { comment?: string; summary?: string } }) => {
+        updates.push(input)
+        const { comment: _, ...fields } = input.changes
+        return { ...detail, summary: fields.summary ?? detail.summary, fields: { ...detail.fields, ...fields } }
+      }
+    }),
+    persisted: { plugin: { updateSheetOpen: true } }
+  })
+  await view.settled()
+  await view.activateRow({ type: 'Table' }, 'APP-1')
+  assert.equal(view.find({ label: 'Summary' }), null)
+  // A status picked in the sheet waits while the text is saved.
+  await view.select({ label: 'Status' }, '2')
+  await view.press({ label: 'Edit summary and description' })
+  assert.equal(view.valueOf({ label: 'Summary' }), 'Fix login')
+  assert.equal(view.valueOf({ label: 'Description' }), 'It breaks')
+  await view.type({ label: 'Summary' }, 'Fix login on Safari', { replace: true })
+  await view.type({ label: 'Description' }, ' on Safari 18')
+  await view.press({ label: 'Save summary and description' })
+  assert.deepEqual(updates, [{ key: 'APP-1', changes: { summary: 'Fix login on Safari', description: 'It breaks on Safari 18' } }])
+  assert.equal(view.find({ label: 'Summary' }), null)
+  assert.ok(view.find({ text: 'Fix login on Safari' }))
+  assert.equal(view.valueOf({ label: 'Status' }), '2')
+  assert.ok(view.find({ text: '1 pending' }))
+  // Cancel puts the text back as Backlog has it.
+  await view.press({ label: 'Edit summary and description' })
+  await view.type({ label: 'Summary' }, 'Something else', { replace: true })
+  await view.press({ label: 'Cancel editing' })
+  await view.press({ label: 'Edit summary and description' })
+  assert.equal(view.valueOf({ label: 'Summary' }), 'Fix login on Safari')
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.refusals, [])
 })

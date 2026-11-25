@@ -5,7 +5,7 @@
 **Your Nulab Backlog issues in Orca's sidebar.**<br>
 Find the ticket, read it, and hand it to an agent without leaving your workspace.
 
-[![Version](https://img.shields.io/badge/version-v0.3.6-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
+[![Version](https://img.shields.io/badge/version-v0.3.7-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
@@ -111,9 +111,10 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
 - **Start agent** sends `/your-skill ISSUE-KEY` when a skill is chosen (`$your-skill` for Codex);
   with no skill, edit the prompt above the button first. Orca then shows the agent's terminal, and
   the issue lists it under *Worktrees*: press one to go back to it.
-- **Update issue** (below the comments) adds a comment and changes status, assignee, priority,
-  type, category, milestone, dates, hours, summary or description. One save sends only what
-  changed, with the comment, as Backlog records it.
+- **Edit an issue**: the ✏️ in the issue's header (which stays at the top) turns the summary and
+  description into fields in place. The **Update issue** bar pinned at the bottom opens upward with
+  a comment box and status, assignee, priority, type, category, milestone, dates and hours. Each
+  save sends only what changed, with the comment, as Backlog records it.
 - **Settings → Audit log** lists every change the plugin made: to Backlog (with the API call, e.g.
   `PATCH /api/v2/issues/APP-1`) and on this computer (accounts, settings, agents started, files
   saved), failed ones too. The newest 500 stay on this computer; API keys are never logged.

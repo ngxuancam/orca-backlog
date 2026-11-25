@@ -158,6 +158,10 @@ const editing = atom<{ key: string; fields: IssueFields; comment: string } | nul
 /** Statuses, members, types… of the open issue's project, for the edit form. */
 const editMeta = atom<{ projectId: number; meta: Meta } | null>(null)
 const saving = atom(false)
+/** Summary and description are edited in place, from the header's edit button. */
+const editingText = atom(false)
+/** The bottom sheet with the other fields and the comment. */
+const sheetOpen = atom('updateSheetOpen', false, { persist: 'plugin' })
 const saveError = atom<string | null>(null)
 /** Workspaces agents were started in for the open issue. */
 const issueRuns = atom<{ key: string; runs: IssueRun[] } | null>(null)
@@ -507,8 +511,14 @@ async function openIssue(key: string): Promise<void> {
   if (read(openKey) === key) void refreshPrompt(key, true)
 }
 
+/** The header edits these two; the bottom sheet the rest and the comment. */
+const TEXT_FIELDS: readonly (keyof IssueFields)[] = ['summary', 'description']
+type EditPart = 'text' | 'fields'
+const inPart = (part: EditPart, name: string) => (part === 'text') === TEXT_FIELDS.includes(name as keyof IssueFields)
+
 function startEditing(issue: IssueDetail): void {
   set(editing, { key: issue.key, fields: issue.fields, comment: '' })
+  set(editingText, false)
   set(saveError, null)
   if (read(editMeta)?.projectId !== issue.projectId) void loadEditMeta(issue.projectId)
 }
@@ -524,19 +534,19 @@ async function loadEditMeta(projectId: number): Promise<void> {
 
 const sameValue = (a: string | string[], b: string | string[]) => JSON.stringify(a) === JSON.stringify(b)
 
-/** What the form changed, field by field, with the comment when there is one. */
-export function changesOf(from: IssueFields, form: { fields: IssueFields; comment: string }): IssueChanges {
+/** What the form changed in one part, field by field; the fields part carries the comment. */
+export function changesOf(from: IssueFields, form: { fields: IssueFields; comment: string }, part: EditPart): IssueChanges {
   const changes: Record<string, string | string[]> = {}
   for (const [name, value] of Object.entries(form.fields) as [keyof IssueFields, string | string[]][]) {
-    if (!sameValue(value, from[name])) changes[name] = value
+    if (inPart(part, name) && !sameValue(value, from[name])) changes[name] = value
   }
-  return { ...changes, ...(form.comment.trim() ? { comment: form.comment } : {}) }
+  return { ...changes, ...(part === 'fields' && form.comment.trim() ? { comment: form.comment } : {}) }
 }
 
-async function saveIssue(issue: IssueDetail): Promise<void> {
+async function saveIssue(issue: IssueDetail, part: EditPart): Promise<void> {
   const form = read(editing)
   if (!form || form.key !== issue.key || read(saving)) return
-  const changes = changesOf(issue.fields, form)
+  const changes = changesOf(issue.fields, form, part)
   if (!Object.keys(changes).length) return
   set(saving, true)
   set(saveError, null)
@@ -544,7 +554,14 @@ async function saveIssue(issue: IssueDetail): Promise<void> {
     const next = await plugin.request('issue.update', { key: issue.key, changes }, { timeoutMs: 120_000 })
     if (read(openKey) !== issue.key) return
     set(detail, { issue: next, error: null })
-    startEditing(next)
+    // The other part's edits are not saved yet: keep them over what Backlog answered.
+    const kept = Object.fromEntries(
+      (Object.keys(form.fields) as (keyof IssueFields)[])
+        .filter((name) => !inPart(part, name) && !sameValue(form.fields[name], issue.fields[name]))
+        .map((name) => [name, form.fields[name]])
+    )
+    set(editing, { key: next.key, fields: { ...next.fields, ...kept }, comment: part === 'fields' ? '' : form.comment })
+    if (part === 'text') set(editingText, false)
     const fields = Object.keys(changes).filter((c) => c !== 'comment').length
     const parts = [fields ? `Saved ${fields} field${fields > 1 ? 's' : ''}` : null, changes.comment ? 'comment added' : null]
     set(notice, { tone: 'success', text: `${parts.filter(Boolean).join(', ')}.` })
@@ -1299,16 +1316,55 @@ function LaunchCard({ issue }: { issue: IssueDetail }) {
   )
 }
 
+/**
+ * A column the panel's height: the header stays at the top, the body scrolls between it and the
+ * update sheet at the bottom.
+ */
 function DetailView({ issueKey }: { issueKey: string }) {
   const { issue, error } = read(detail)
   return (
-    <Stack gap="sm">
+    <Box height="100%" gap="sm">
+      <Box shrink={false} gap="xs">
+        <DetailHeader issueKey={issueKey} issue={issue} />
+      </Box>
+      <Box grow minHeight={0} scroll="y" gap="sm">
+        <ErrorCallout title="Cannot load issue" text={error} />
+        {!issue && !error ? <Spinner label="Loading issue" /> : null}
+        {issue ? <IssueBody issue={issue} /> : null}
+      </Box>
+      {issue ? <UpdateSheet issue={issue} /> : null}
+    </Box>
+  )
+}
+
+function DetailHeader({ issueKey, issue }: { issueKey: string; issue: IssueDetail | null }) {
+  const form = read(editing)
+  const text = read(editingText) && issue && form?.key === issue.key
+  const changes = issue && form?.key === issue.key ? changesOf(issue.fields, form, 'text') : {}
+  const busy = read(saving)
+  return (
+    <Stack gap="xs">
       <Row justify="between" align="center">
         <Row gap="xs" align="center">
           <BackButton onPress={backFromIssue} />
           <Heading level={2}>{issueKey}</Heading>
         </Row>
         <Row gap="xs">
+          {text ? (
+            <IconButton
+              icon="check"
+              label="Save summary and description"
+              size="sm"
+              tone="accent"
+              disabled={busy || !Object.keys(changes).length || !form.fields.summary.trim()}
+              onPress={() => issue && saveIssue(issue, 'text')}
+            />
+          ) : (
+            <IconButton icon="edit" label="Edit summary and description" size="sm" variant="ghost" disabled={!issue} onPress={() => set(editingText, true)} />
+          )}
+          {text ? (
+            <IconButton icon="close" label="Cancel editing" size="sm" variant="ghost" disabled={busy} onPress={() => issue && cancelText(issue)} />
+          ) : null}
           <IconButton icon="refresh" label="Reload issue" size="sm" variant="ghost" onPress={() => void openIssue(issueKey)} />
           <IconButton
             icon="open-external"
@@ -1320,11 +1376,32 @@ function DetailView({ issueKey }: { issueKey: string }) {
           />
         </Row>
       </Row>
-      <ErrorCallout title="Cannot load issue" text={error} />
-      {!issue && !error ? <Spinner label="Loading issue" /> : null}
-      {issue ? <IssueBody issue={issue} /> : null}
+      {!issue ? null : text ? (
+        <Input
+          label="Summary"
+          labelHidden
+          value={form.fields.summary}
+          invalid={!form.fields.summary.trim()}
+          onChange={(summary) => set(editing, { ...form, fields: { ...form.fields, summary } })}
+          onSubmit={() => void saveIssue(issue, 'text')}
+        />
+      ) : (
+        <Text weight="semibold">{issue.summary}</Text>
+      )}
+      <ErrorCallout title="Cannot save" text={read(saveError)} />
+      <Notice />
     </Stack>
   )
+}
+
+/** Leaves edit mode with the summary and description as Backlog has them. */
+function cancelText(issue: IssueDetail): void {
+  const form = read(editing)
+  if (form?.key === issue.key) {
+    set(editing, { ...form, fields: { ...form.fields, summary: issue.fields.summary, description: issue.fields.description } })
+  }
+  set(editingText, false)
+  set(saveError, null)
 }
 
 /** An image reference the worker rewrote: `![alt](attachment:<id>)`. */
@@ -1437,7 +1514,6 @@ function Worktrees({ issue }: { issue: IssueDetail }) {
 function IssueBody({ issue }: { issue: IssueDetail }) {
   return (
     <Stack gap="sm">
-      <Text weight="semibold">{issue.summary}</Text>
       <Row gap="xs" wrap>
         <Badge tone={toneOfColor(issue.typeColor)}>{issue.type}</Badge>
         <Badge tone={statusTone(issue.statusId)}>{issue.status}</Badge>
@@ -1455,11 +1531,10 @@ function IssueBody({ issue }: { issue: IssueDetail }) {
       />
       <LinkedIssues issue={issue} />
       <PullRequests issue={issue} />
-      <Notice />
       <Worktrees issue={issue} />
       <LaunchCard issue={issue} />
       <Section title="Description" id="description">
-        {issue.description ? <RichText content={issue.description} issueKey={issue.key} /> : <Text muted>No description.</Text>}
+        <Description issue={issue} />
       </Section>
       {issue.attachments.length ? (
         <List label={`Attachments (${issue.attachments.length})`}>
@@ -1491,7 +1566,6 @@ function IssueBody({ issue }: { issue: IssueDetail }) {
           ))}
         </Stack>
       </Section>
-      <UpdateIssue issue={issue} />
     </Stack>
   )
 }
@@ -1532,15 +1606,60 @@ function Optional(props: { label: string; none: string; value: string; options: 
   )
 }
 
-/** Comment on the issue and change its fields; one save sends both, as Backlog records them. */
-function UpdateIssue({ issue }: { issue: IssueDetail }) {
+/** The description as Backlog shows it, or its raw text while the header's edit mode is on. */
+function Description({ issue }: { issue: IssueDetail }) {
+  const form = read(editing)
+  if (read(editingText) && form?.key === issue.key) {
+    return (
+      <Textarea
+        label="Description"
+        labelHidden
+        rows={12}
+        placeholder="Description (Backlog formatting)"
+        value={form.fields.description}
+        onChange={(description) => set(editing, { ...form, fields: { ...form.fields, description } })}
+        onSubmit={() => void saveIssue(issue, 'text')}
+      />
+    )
+  }
+  return issue.description ? <RichText content={issue.description} issueKey={issue.key} /> : <Text muted>No description.</Text>
+}
+
+/**
+ * Pinned under the issue: one bar while closed; opened, it rises over the body (which scrolls)
+ * with the comment and every other field. One save sends both, as Backlog records them.
+ */
+function UpdateSheet({ issue }: { issue: IssueDetail }) {
+  const form = read(editing)
+  if (!form || form.key !== issue.key) return null
+  const open = read(sheetOpen)
+  const pending = Object.keys(changesOf(issue.fields, form, 'fields')).length
+  return (
+    <Box shrink={false} border radius="md" background="card" padding="xs" gap="xs" maxHeight="60%">
+      <Row justify="between" align="center">
+        <Button variant="ghost" size="sm" icon={open ? 'collapse' : 'expand'} onPress={() => set(sheetOpen, !open)}>
+          {open ? 'Hide update' : 'Update issue'}
+        </Button>
+        {pending ? <Badge tone="accent">{`${pending} pending`}</Badge> : null}
+      </Row>
+      {open ? (
+        <Box grow minHeight={0} scroll="y" paddingX="xs">
+          <UpdateFields issue={issue} />
+        </Box>
+      ) : null}
+    </Box>
+  )
+}
+
+/** Comment on the issue and change its fields. */
+function UpdateFields({ issue }: { issue: IssueDetail }) {
   const form = read(editing)
   const m = read(editMeta)
   if (!form || form.key !== issue.key) return null
   const meta = m?.projectId === issue.projectId ? m.meta : null
   const f = form.fields
   const change = (part: Partial<IssueFields>) => set(editing, { ...form, fields: { ...f, ...part } })
-  const changes = changesOf(issue.fields, form)
+  const changes = changesOf(issue.fields, form, 'fields')
   const dirty = Object.keys(changes).length > 0
   const fieldCount = Object.keys(changes).filter((c) => c !== 'comment').length
   const busy = read(saving)
@@ -1550,15 +1669,14 @@ function UpdateIssue({ issue }: { issue: IssueDetail }) {
       ? `Save ${fieldCount} change${fieldCount > 1 ? 's' : ''}${changes.comment ? ' and comment' : ''}`
       : 'Comment'
   return (
-    <Section title="Update issue" id="update">
-      <Stack gap="sm">
+    <Stack gap="sm">
         <Textarea
           label="Comment"
           rows={4}
           placeholder="Add a comment (Backlog formatting)"
           value={form.comment}
           onChange={(comment) => set(editing, { ...form, comment })}
-          onSubmit={() => void saveIssue(issue)}
+          onSubmit={() => void saveIssue(issue, 'fields')}
         />
         {!meta ? (
           <Spinner label="Loading statuses and members" />
@@ -1584,22 +1702,26 @@ function UpdateIssue({ issue }: { issue: IssueDetail }) {
               <Input label="Estimated hours" value={f.estimatedHours} invalid={badHours(f.estimatedHours)} onChange={(estimatedHours) => change({ estimatedHours })} />
               <Input label="Actual hours" value={f.actualHours} invalid={badHours(f.actualHours)} onChange={(actualHours) => change({ actualHours })} />
             </FilterRow>
-            <Input label="Summary" value={f.summary} invalid={!f.summary.trim()} onChange={(summary) => change({ summary })} />
-            <Textarea label="Description" rows={8} value={f.description} onChange={(description) => change({ description })} />
           </Stack>
         )}
-        <ErrorCallout title="Cannot save" text={read(saveError)} />
         <Row gap="xs" wrap>
-          <Button tone="accent" icon="check" disabled={busy || !dirty} onPress={() => saveIssue(issue)}>
+          <Button tone="accent" icon="check" disabled={busy || !dirty} onPress={() => saveIssue(issue, 'fields')}>
             {label}
           </Button>
-          <Button variant="ghost" disabled={busy || !dirty} onPress={() => startEditing(issue)}>
+          <Button variant="ghost" disabled={busy || !dirty} onPress={() => discardFields(issue)}>
             Discard
           </Button>
         </Row>
-      </Stack>
-    </Section>
+    </Stack>
   )
+}
+
+/** Drops the sheet's edits and comment; the header's stay. */
+function discardFields(issue: IssueDetail): void {
+  const form = read(editing)
+  if (form?.key !== issue.key) return
+  const text = Object.fromEntries(TEXT_FIELDS.map((name) => [name, form.fields[name]]))
+  set(editing, { key: issue.key, fields: { ...issue.fields, ...text }, comment: '' })
 }
 
 export default function Panel() {
