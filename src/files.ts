@@ -101,3 +101,33 @@ export async function pruneCache(dir: string, { maxAgeDays = 7, maxBytes = 200 <
   await Promise.all(drop.map((path) => rm(path, { recursive: true, force: true }).catch(() => undefined)))
   return drop.length
 }
+
+/** The OS clipboard tool for this platform, fed on stdin. */
+function clipboardCommand(): [string, string[]][] {
+  if (process.platform === 'win32') return [[join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'clip.exe'), []]]
+  if (process.platform === 'darwin') return [['pbcopy', []]]
+  return [
+    ['wl-copy', []],
+    ['xclip', ['-selection', 'clipboard']],
+    ['xsel', ['--clipboard', '--input']]
+  ]
+}
+
+/** Copies text with the OS clipboard tool; the panel frame has no clipboard of its own. */
+export async function copyToClipboard(text: string): Promise<void> {
+  let last: Error | null = null
+  for (const [command, args] of clipboardCommand()) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(command, args, { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
+        child.on('error', reject)
+        child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${command} exited with ${code}`))))
+        child.stdin.end(text)
+      })
+      return
+    } catch (error) {
+      last = error as Error
+    }
+  }
+  throw new Error(`Cannot copy: ${last?.message ?? 'no clipboard tool'}`)
+}

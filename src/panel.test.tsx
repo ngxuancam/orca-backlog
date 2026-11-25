@@ -10,10 +10,36 @@ afterEach(() => view?.unmount())
 const session: Session = { accountId: 'a1', space: 'acme.backlog.com', me: { id: 7, name: 'Me', userId: 'me' } }
 const accounts = [{ id: 'a1', space: 'acme.backlog.com', name: 'Me' }]
 const state = (s: Session | null): AuthState => ({ session: s, accounts: s ? accounts : [], orcaProject: null })
-const row = { key: 'APP-1', summary: 'Fix login', status: 'Open', statusId: 1, priority: 'High', type: 'Bug', typeColor: '#ea733b', due: null, updated: 0 }
+const row = {
+  key: 'APP-1',
+  summary: 'Fix login',
+  status: 'Open',
+  statusId: 1,
+  priority: 'High',
+  type: 'Bug',
+  typeColor: '#ea733b',
+  due: null,
+  updated: 0,
+  assignee: 'Me',
+  createdUser: 'Boss',
+  updatedUser: 'Me',
+  created: 0,
+  startDate: null,
+  category: 'Auth',
+  milestone: '',
+  version: '',
+  resolution: '',
+  estimatedHours: 2,
+  actualHours: null
+}
 const detail: IssueDetail = {
   ...row,
   url: 'https://acme.backlog.com/view/APP-1',
+  links: [
+    { url: 'https://acme.backlog.com/view/APP-1', label: 'This issue in Backlog', from: 'issue' },
+    { url: 'https://acme.backlog.com/git/APP/app/pullRequests/7', label: '#7 Fix login', from: 'pull request' },
+    { url: 'https://status.example.com/incidents/42', label: 'status.example.com/incidents/42', from: 'comment' }
+  ],
   projectId: 10,
   fields: {
     summary: 'Fix login',
@@ -62,6 +88,7 @@ const detail: IssueDetail = {
 
 let started: unknown
 let focused: unknown
+const linkCalls: unknown[] = []
 let auditRows: AuditEntry[] = [
   { id: 'a1', at: 0, action: 'Updated issue', api: 'PATCH /api/v2/issues/APP-1', target: 'APP-1', details: 'status → 3', space: 'acme.backlog.com', ok: true }
 ]
@@ -98,6 +125,8 @@ function host(signedIn: boolean, extra: Record<string, (input: never) => unknown
       'launch.start': (input) => ((started = input), { workspaceId: 'w1' }),
       'attachment.open': () => ({ path: 'x/shot.png', mode: 'preview' }),
       'credentials.found': () => [],
+      'link.copy': (input) => (linkCalls.push(['copy', input]), { copied: true }),
+      'link.openInOrca': (input) => (linkCalls.push(['orca', input]), { opened: true }),
       'audit.list': () => auditRows,
       'audit.clear': () => (auditRows = [{ ...auditRows[0]!, id: 'c', action: 'Cleared the audit log', details: '1 entries' }]),
       'runs.get': () => runs,
@@ -258,6 +287,50 @@ test('the header edits the summary and description in place, apart from the shee
   assert.equal(view.valueOf({ label: 'Summary' }), 'Fix login on Safari')
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.refusals, [])
+})
+
+test('a link offers copy, the browser and Orca\'s browser', async () => {
+  view = await mount(panel, { host: host(true) })
+  await view.settled()
+  await view.activateRow({ type: 'Table' }, 'APP-1')
+  assert.equal(view.find({ role: 'button', text: 'Copy link' }), null)
+  await view.press({ text: /^status\.example\.com\/incidents\/42/ })
+  await view.press({ role: 'button', text: 'Copy link' })
+  // The result shows inline under the links, not in a box at the top.
+  assert.ok(view.find({ type: 'Text', text: 'Copied: https://status.example.com/incidents/42' }))
+  assert.equal(view.find({ type: 'Callout' }), null)
+  await view.press({ role: 'button', text: 'Open in Orca' })
+  assert.deepEqual(linkCalls, [
+    ['copy', { url: 'https://status.example.com/incidents/42' }],
+    ['orca', { url: 'https://status.example.com/incidents/42' }]
+  ])
+  // A pull request's row picks its link too; a second press hides the actions.
+  await view.press({ text: /^#7 Fix login/ })
+  assert.equal(view.findAll({ role: 'button', text: 'Copy link' }).length, 1)
+  await view.press({ text: /^#7 Fix login/ })
+  assert.equal(view.find({ role: 'button', text: 'Copy link' }), null)
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+})
+
+test('Columns picks which fields a table shows, per table, and remembers it', async () => {
+  view = await mount(panel, { host: host(true) })
+  await view.settled()
+  const wide = { width: 900 }
+  assert.deepEqual(view.columnsOf({ label: 'My issues' }, wide), ['key', 'summary', 'status', 'priority', 'due'])
+  await view.press({ role: 'button', text: 'Columns (5)' })
+  await view.toggle({ label: 'Assignee' })
+  await view.toggle({ label: 'Priority' })
+  await view.toggle({ label: 'Estimated' })
+  assert.equal(view.find({ label: 'Key', type: 'Checkbox' })?.props.disabled, true)
+  // Backlog's order, whatever the order they were picked in.
+  assert.deepEqual(view.columnsOf({ label: 'My issues' }, wide), ['key', 'summary', 'assignee', 'status', 'due', 'estimatedHours'])
+  assert.deepEqual(view.persisted.plugin.shownColumns, { home: ['key', 'summary', 'assignee', 'status', 'due', 'estimatedHours'] })
+  await view.press({ role: 'button', text: 'Reset columns' })
+  assert.deepEqual(view.columnsOf({ label: 'My issues' }, wide), ['key', 'summary', 'status', 'priority', 'due'])
+  await view.press({ role: 'button', text: 'Done' })
+  assert.equal(view.find({ label: 'Assignee', type: 'Checkbox' }), null)
+  assert.deepEqual(view.errors, [])
 })
 
 test('settings shows the audit log and clears it after a second press', async () => {
