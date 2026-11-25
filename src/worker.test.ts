@@ -195,7 +195,7 @@ test('a skill starts as its command; without one the agent gets a brief of the i
   await worker.request('launch.start', { key: 'APP-1', target: 'ws:w1', agent: 'claude', skill: 'fixbug-backlog' })
   await worker.request('launch.start', { key: 'APP-1', target: 'new:p1|local', agent: 'codex', prompt: '  Only fix the CSS  ' })
   assert.deepEqual(launched, [
-    { target: { workspaceId: 'w1' }, agent: 'claude', prompt: '/fixbug-backlog APP-1' },
+    { target: { workspaceId: 'w1', path: '/r' }, agent: 'claude', prompt: '/fixbug-backlog APP-1' },
     { target: { projectId: 'p1', hostId: 'local', name: 'APP-1' }, agent: 'codex', prompt: 'Only fix the CSS' }
   ])
   assert.equal(host.callsOf('agent.launch').length, 0)
@@ -233,6 +233,12 @@ test('saves changed fields with the comment, or posts the comment alone', async 
   const worker = await mountWorker(main, { host: saved() })
   await worker.request('auth.status')
   const detail = await worker.request('issue.get', { key: 'APP-1' })
+  assert.equal(detail.assignee, 'Me')
+  const [listed] = (await worker.request('issues.list', { status: 'notClosed', sort: 'assignee', order: 'asc', offset: 0 })).issues
+  assert.deepEqual(
+    { assignee: listed!.assignee, createdUser: listed!.createdUser, created: listed!.created, category: listed!.category, version: listed!.version },
+    { assignee: 'Me', createdUser: 'Boss', created: Date.parse('2026-11-01T00:00:00Z'), category: '', version: '' }
+  )
   assert.equal(detail.fields.statusId, '2')
   assert.equal(detail.fields.assigneeId, '7')
   assert.equal(detail.fields.dueDate, '2026-12-01')
@@ -279,6 +285,26 @@ test('saves changed fields with the comment, or posts the comment alone', async 
   assert.ok(!JSON.stringify(log).includes('apiKey'), 'no key in the log')
   const cleared = await worker.request('audit.clear')
   assert.deepEqual(cleared.map((e) => [e.action, e.details]), [['Cleared the audit log', '3 entries']])
+})
+
+test('collects the issue\'s web links, once each, and refuses other schemes', () => {
+  const pr = { url: 'https://acme.backlog.com/git/APP/app/pullRequests/7', number: 7, summary: 'Fix login' } as never
+  const links = main.linksIn(
+    'https://acme.backlog.com/view/APP-1',
+    [pr],
+    'See [the spec](https://docs.example.com/spec?id=3). Also https://docs.example.com/spec?id=3, and file:///etc/passwd',
+    ['Logs: https://logs.example.com/run/9.', 'Same PR https://acme.backlog.com/git/APP/app/pullRequests/7']
+  )
+  assert.deepEqual(
+    links.map((l) => [l.from, l.url]),
+    [
+      ['issue', 'https://acme.backlog.com/view/APP-1'],
+      ['pull request', 'https://acme.backlog.com/git/APP/app/pullRequests/7'],
+      ['description', 'https://docs.example.com/spec?id=3'],
+      ['comment', 'https://logs.example.com/run/9']
+    ]
+  )
+  assert.throws(() => main.webUrl('javascript:alert(1)'), /Not a web link/)
 })
 
 test('members who share a name are told apart by their login', async () => {

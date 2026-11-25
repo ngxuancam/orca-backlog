@@ -36,7 +36,18 @@ const row = (key: string, summary: string, statusId: number, priority: string, d
   type: 'Task',
   typeColor: '#a1af2f',
   due,
-  updated: now - ago * hour
+  updated: now - ago * hour,
+  assignee: 'Alex Kim',
+  createdUser: 'Sam Lee',
+  updatedUser: 'Alex Kim',
+  created: now - (ago + 48) * hour,
+  startDate: null,
+  category: 'Checkout',
+  milestone: 'Sprint 13',
+  version: '',
+  resolution: '',
+  estimatedHours: 3,
+  actualHours: null
 })
 const rows: IssueRow[] = [
   row('SHOP-142', 'Apple Pay button misaligned on checkout', 2, 'High', '2026-12-02', 1),
@@ -52,6 +63,11 @@ const detail: IssueDetail = {
   type: 'Bug',
   typeColor: '#ea733b',
   url: 'https://acme.backlog.com/view/SHOP-142',
+  links: [
+    { url: 'https://acme.backlog.com/view/SHOP-142', label: 'This issue in Backlog', from: 'issue' },
+    { url: 'https://acme.backlog.com/git/SHOP/web/pullRequests/318', label: '#318 Align Apple Pay button with the card form', from: 'pull request' },
+    { url: 'https://developer.apple.com/design/human-interface-guidelines/apple-pay', label: 'developer.apple.com/design/human-interface-guidelines/apple-pay', from: 'description' }
+  ],
   projectId: 10,
   fields: {
     summary: 'Apple Pay button misaligned on checkout',

@@ -54,7 +54,16 @@ export async function installedSkills(): Promise<SkillOption[]> {
 }
 
 /** Where an agent starts: an existing workspace, or a new worktree of a project. */
-export type LaunchTarget = { workspaceId: string } | { projectId: string; hostId?: string; name: string }
+export type LaunchTarget = { workspaceId: string; path?: string } | { projectId: string; hostId?: string; name: string }
+
+/**
+ * How the CLI names a workspace. A local one by its folder (`path:`), which the CLI always
+ * resolves; `id:` does not resolve every workspace, a home-folder one for instance.
+ */
+export function worktreeSelector(workspaceId: string, path?: string): string {
+  if (path) return `path:${path.replace(/\\/g, '/')}`
+  return workspaceId.startsWith('folder:') ? workspaceId : `id:${workspaceId}`
+}
 
 /** Windows caps a command line near 32K characters; longer prompts go through the host API. */
 export const MAX_CLI_PROMPT = 24_000
@@ -66,8 +75,8 @@ export const MAX_CLI_PROMPT = 24_000
  */
 export async function launchWithPrompt(target: LaunchTarget, agent: string, prompt: string): Promise<{ workspaceId: string }> {
   if ('workspaceId' in target) {
-    const { workspaceId } = target
-    const worktree = workspaceId.startsWith('folder:') ? workspaceId : `id:${workspaceId}`
+    const { workspaceId, path } = target
+    const worktree = worktreeSelector(workspaceId, path)
     await orcaJson(['agent', 'launch', '--agent', agent, '--worktree', worktree, '--prompt', prompt, '--focus'], 120_000)
     return { workspaceId }
   }
@@ -92,5 +101,19 @@ export async function launchWithPrompt(target: LaunchTarget, agent: string, prom
   return { workspaceId: result.worktree?.id ?? result.worktreeId ?? '' }
 }
 
+/** A tab of Orca's own browser, shown in the workspace given (else the active one). */
+async function openBrowserTab(url: string, workspace?: { id: string; path?: string }): Promise<void> {
+  const open = (worktree: string) => orcaJson(['tab', 'create', '--url', url, '--worktree', worktree, '--focus'], 60_000)
+  if (workspace) {
+    try {
+      await open(worktreeSelector(workspace.id, workspace.path))
+      return
+    } catch {
+      // Not a selector the CLI resolves (a folder workspace, a remote host): Orca's active one.
+    }
+  }
+  await open('active')
+}
+
 /** What the worker launches with; tests swap it to keep the real CLI out. */
-export const cliLauncher = { launchWithPrompt }
+export const cliLauncher = { launchWithPrompt, openBrowserTab }

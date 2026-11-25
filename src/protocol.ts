@@ -123,7 +123,24 @@ export type IssueQuery = IssueFilter & {
 }
 
 /** Backlog's own `sort` values the table can ask for. */
-export type SortKey = 'updated' | 'created' | 'summary' | 'status' | 'priority' | 'dueDate'
+/** Backlog's own `sort` values the tables use. */
+export type SortKey =
+  | 'updated'
+  | 'created'
+  | 'summary'
+  | 'status'
+  | 'priority'
+  | 'dueDate'
+  | 'issueType'
+  | 'assignee'
+  | 'createdUser'
+  | 'updatedUser'
+  | 'startDate'
+  | 'category'
+  | 'milestone'
+  | 'version'
+  | 'estimatedHours'
+  | 'actualHours'
 
 export type IssueRow = {
   key: string
@@ -136,6 +153,18 @@ export type IssueRow = {
   typeColor: string | null
   due: string | null
   updated: number
+  assignee: string | null
+  createdUser: string | null
+  updatedUser: string | null
+  created: number
+  startDate: string | null
+  /** Names joined with `, `; `''` for none. */
+  category: string
+  milestone: string
+  version: string
+  resolution: string
+  estimatedHours: number | null
+  actualHours: number | null
 }
 
 export type AttachmentKind = 'image' | 'video' | 'file'
@@ -196,7 +225,12 @@ export type IssueFields = {
 /** Only the fields that changed, and an optional comment Backlog records with them. */
 export type IssueChanges = Partial<IssueFields> & { comment?: string }
 
+/** A web link of an issue: its own page, a pull request, or one written in its text. */
+export type IssueLink = { url: string; label: string; from: 'issue' | 'pull request' | 'description' | 'comment' }
+
 export type IssueDetail = IssueRow & {
+  /** The issue's page, its pull requests, then links in its description and comments. */
+  links: IssueLink[]
   /** What the edit form starts from. */
   fields: IssueFields
   url: string
@@ -261,6 +295,10 @@ declare module 'orca' {
     'issue.get': { input: { key: string }; output: IssueDetail }
     /** Saves changed fields (with the comment, if any), or only adds the comment; answers the issue again. */
     'issue.update': { input: { key: string; changes: IssueChanges }; output: IssueDetail }
+    /** Copies a link to the system clipboard. */
+    'link.copy': { input: { url: string }; output: { copied: true } }
+    /** Opens a link in a tab of Orca's own browser, in the focused workspace. */
+    'link.openInOrca': { input: { url: string }; output: { opened: true } }
     /** Images and videos open in Orca's preview; other files land in Downloads and their folder opens. */
     'attachment.open': {
       input: { key: string; attachmentId: number }

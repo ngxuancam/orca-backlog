@@ -18,7 +18,8 @@ import {
   revealInFolder,
   safeName,
   saveOnce,
-  selfIgnoringFolder
+  selfIgnoringFolder,
+  copyToClipboard
 } from './files'
 import { backlogMarkdown } from './inline'
 import { cliLauncher, installedAgents, installedSkills, MAX_CLI_PROMPT, type LaunchTarget } from './orcaCli'
@@ -33,6 +34,7 @@ import type {
   IssueDetail,
   IssueFields,
   IssueFilter,
+  IssueLink,
   IssueRow,
   IssueRun,
   LinkedIssue,
@@ -74,6 +76,7 @@ type Issue = {
   priority: Named | null
   assignee: Named | null
   createdUser: Named | null
+  updatedUser?: Named | null
   startDate: string | null
   dueDate: string | null
   created: string
@@ -110,8 +113,20 @@ const toRow = (i: Issue): IssueRow => ({
   type: i.issueType.name,
   typeColor: i.issueType.color ?? null,
   due: day(i.dueDate),
-  updated: Date.parse(i.updated)
+  updated: Date.parse(i.updated),
+  assignee: i.assignee?.name ?? null,
+  createdUser: i.createdUser?.name ?? null,
+  updatedUser: i.updatedUser?.name ?? null,
+  created: Date.parse(i.created),
+  startDate: day(i.startDate),
+  category: names(i.category),
+  milestone: names(i.milestone),
+  version: names(i.versions),
+  resolution: i.resolution?.name ?? '',
+  estimatedHours: i.estimatedHours ?? null,
+  actualHours: i.actualHours ?? null
 })
+const names = (list: Named[] | undefined) => (list ?? []).map((x) => x.name).join(', ')
 const linked = (i: Issue): LinkedIssue => ({ key: i.issueKey, summary: i.summary, status: i.status.name, statusId: i.status.id })
 const options = (items: Named[]): Option[] => items.map((x) => ({ value: String(x.id), label: x.name }))
 const ids = (value: string | undefined) => (value ? value.split(',').map(Number).filter(Boolean) : undefined)
@@ -565,9 +580,10 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
     ])
     const texts = comments.filter((c) => c.content?.trim()).reverse()
     const [links, pullRequests] = await Promise.all([linksOf(i), pullRequestsOf(i)])
+    const url = `https://${current!.creds.space}/view/${i.issueKey}`
     return {
       ...toRow(i),
-      url: `https://${current!.creds.space}/view/${i.issueKey}`,
+      url,
       projectId: i.projectId,
       description: backlogMarkdown(i.description ?? '', i.attachments),
       assignee: i.assignee?.name ?? null,
@@ -585,6 +601,7 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
       })),
       ...links,
       pullRequests,
+      links: linksIn(url, pullRequests, i.description ?? '', texts.map((c) => c.content!)),
       fields: fieldsOf(i)
     }
   }
@@ -612,6 +629,17 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
     const removed = (await Promise.all(known.map((dir) => pruneCache(dir)))).reduce((a, b) => a + b, 0)
     if (removed) orca.log(`cleaned ${removed} old preview folder(s)`)
   })()
+
+  orca.panels.handle('link.copy', async ({ url }) => {
+    await copyToClipboard(webUrl(url))
+    return { copied: true as const }
+  })
+
+  orca.panels.handle('link.openInOrca', async ({ url }) => {
+    const ws = await focusedLocalWorkspace().catch(() => null)
+    await cliLauncher.openBrowserTab(webUrl(url), ws ? { id: ws.id, path: ws.path } : undefined)
+    return { opened: true as const }
+  })
 
   orca.panels.handle('attachment.open', async ({ key, attachmentId }) => {
     const i = await issue(key)
@@ -757,12 +785,20 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
     return { workspaceId }
   })
 
+  /** A workspace with its folder when it is on this computer, so the CLI can name it by path. */
+  async function workspaceTarget(workspaceId: string): Promise<LaunchTarget> {
+    const { workspaces } = await orca.host.call('workspace.list')
+    const ws = workspaces.find((w) => w.id === workspaceId)
+    const local = ws && (ws.hostId === 'local' || ws.hostId === null) && ws.path
+    return local ? { workspaceId, path: ws.path } : { workspaceId }
+  }
+
   async function startAgent({ key, target, agent, skill, prompt: given }: LaunchInput): Promise<{ workspaceId: string; via: string; prompt: string }> {
     const prompt = given?.trim() || (await launchPrompt(key, agent, skill))
     const [projectId, hostId] = target.startsWith('new:') ? target.slice(4).split('|') : []
     const where: LaunchTarget = projectId
       ? { projectId, ...(hostId ? { hostId } : {}), name: key }
-      : { workspaceId: target.slice(3) }
+      : await workspaceTarget(target.slice(3))
     if (prompt.length <= MAX_CLI_PROMPT) {
       try {
         const { workspaceId } = await cliLauncher.launchWithPrompt(where, agent, prompt)
@@ -868,6 +904,44 @@ export function changeForm(changes: IssueChanges): Query {
     form[field] = field in names && value ? Number(value) : field === 'description' ? (raw as string) : value
   }
   return form
+}
+
+/** Only web pages leave the plugin: anything else is refused. */
+export function webUrl(url: string): string {
+  const parsed = new URL(url)
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error(`Not a web link: ${url}`)
+  return parsed.toString()
+}
+
+/** Links written in Backlog text; trailing punctuation is not part of them. */
+const TEXT_LINK = /https?:\/\/[^\s<>"'`)\]]+/g
+
+/** `host/path` for a list, short enough to read in a sidebar. */
+const linkLabel = (url: string) => {
+  const u = new URL(url)
+  const text = `${u.host}${u.pathname === '/' ? '' : decodeURI(u.pathname)}${u.search}`
+  return text.length > 80 ? `${text.slice(0, 79)}…` : text
+}
+
+export function linksIn(issueUrl: string, prs: PullRequest[], description: string, comments: string[]): IssueLink[] {
+  const seen = new Set<string>()
+  const out: IssueLink[] = []
+  const add = (url: string, from: IssueLink['from'], label?: string) => {
+    const clean = url.replace(/[.,;:!?]+$/, '')
+    try {
+      const href = webUrl(clean)
+      if (seen.has(href)) return
+      seen.add(href)
+      out.push({ url: href, label: label ?? linkLabel(href), from })
+    } catch {
+      // Not a URL after all: leave it as text.
+    }
+  }
+  add(issueUrl, 'issue', 'This issue in Backlog')
+  for (const pr of prs) add(pr.url, 'pull request', `#${pr.number} ${pr.summary}`)
+  for (const m of description.matchAll(TEXT_LINK)) add(m[0], 'description')
+  for (const c of comments) for (const m of c.matchAll(TEXT_LINK)) add(m[0], 'comment')
+  return out.slice(0, 100)
 }
 
 /** Local `yyyy-MM-dd`, `days` from today. */

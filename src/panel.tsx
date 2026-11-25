@@ -31,8 +31,10 @@ import {
   Text,
   Textarea,
   type Atom,
+  type IconName,
   type OrcaNode,
   type PanelContext,
+  type TableCell,
   type TableColumn,
   type TableSort,
   type Tone
@@ -49,6 +51,7 @@ import type {
   IssueDetail,
   IssueFields,
   IssueFilter,
+  IssueLink,
   IssueRow,
   IssueRun,
   LaunchOptions,
@@ -144,7 +147,18 @@ const openKey = atom<string | null>('openKey', null, { persist: 'plugin' })
 /** Issues opened before this one through their links; Back walks it. */
 const trail = atom<string[]>('trail', [], { persist: 'plugin' })
 const detail = atom<{ issue: IssueDetail | null; error: string | null }>({ issue: null, error: null })
-const notice = atom<{ tone: Tone; text: string } | null>(null)
+/** Where a result shows: next to the control that asked for it. */
+type Place = 'header' | 'fields' | 'links' | 'pullRequests' | 'attachments' | 'description' | 'comments' | 'launch'
+/** The last action's result, shown inline at its place; a success fades after a few seconds. */
+const notice = atom<{ place: Place; tone: Tone; text: string } | null>(null)
+let noticeTimer: ReturnType<typeof setTimeout> | undefined
+const SUCCESS_FADES_MS = 4000
+function say(place: Place, tone: Tone, text: string): void {
+  clearTimeout(noticeTimer)
+  const next = { place, tone, text }
+  set(notice, next)
+  if (tone === 'success') noticeTimer = setTimeout(() => read(notice) === next && set(notice, null), SUCCESS_FADES_MS)
+}
 
 const launchOptions = atom<LaunchOptions | null>(null)
 /** The last choices survive restarts, so the next issue starts the same way. */
@@ -158,11 +172,12 @@ const editing = atom<{ key: string; fields: IssueFields; comment: string } | nul
 /** Statuses, members, types… of the open issue's project, for the edit form. */
 const editMeta = atom<{ projectId: number; meta: Meta } | null>(null)
 const saving = atom(false)
+/** The link whose actions show, and the list it was picked in (the bar shows under that list). */
+const pickedLink = atom<{ list: string; url: string } | null>(null)
 /** Summary and description are edited in place, from the header's edit button. */
 const editingText = atom(false)
 /** The bottom sheet with the other fields and the comment. */
 const sheetOpen = atom('updateSheetOpen', false, { persist: 'plugin' })
-const saveError = atom<string | null>(null)
 /** Workspaces agents were started in for the open issue. */
 const issueRuns = atom<{ key: string; runs: IssueRun[] } | null>(null)
 /** The first message for the agent, for one issue, agent and skill; `edited` keeps it on changes. */
@@ -186,23 +201,117 @@ const picked = <K extends string>(name: K, value: string) =>
   (value === 'all' ? {} : { [name]: value }) as Partial<Record<K, string>>
 
 /** Table column → Backlog `sort`. Keys sort as creation order, which is how Backlog numbers them. */
+/** Table column → Backlog `sort`. Keys sort as creation order, which is how Backlog numbers them. */
 const SORT_BY: Record<string, SortKey> = {
   key: 'created',
+  type: 'issueType',
   summary: 'summary',
+  assignee: 'assignee',
   status: 'status',
   priority: 'priority',
+  created: 'created',
+  startDate: 'startDate',
   due: 'dueDate',
-  updated: 'updated'
+  updated: 'updated',
+  createdUser: 'createdUser',
+  updatedUser: 'updatedUser',
+  category: 'category',
+  milestone: 'milestone',
+  version: 'version',
+  estimatedHours: 'estimatedHours',
+  actualHours: 'actualHours'
 }
 
-/** Every column either table can show; each screen picks its own. */
+/** Every column a table can show, in Backlog's order; the person picks which (Columns). */
 const COLUMNS: Record<string, TableColumn> = {
   key: { key: 'key', label: 'Key', width: 'sm', sortable: true },
+  type: { key: 'type', label: 'Type', width: 'sm', sortable: true },
   summary: { key: 'summary', label: 'Summary', minWidth: 'md', sortable: true },
+  assignee: { key: 'assignee', label: 'Assignee', width: 'sm', sortable: true },
   status: { key: 'status', label: 'Status', width: 'sm', sortable: true, hideBelow: 'sm' },
   priority: { key: 'priority', label: 'Priority', width: 'xs', sortable: true, hideBelow: 'md' },
+  created: { key: 'created', label: 'Registered', width: 'sm', sortable: true },
+  startDate: { key: 'startDate', label: 'Start', width: 'sm', sortable: true },
   due: { key: 'due', label: 'Due', width: 'sm', sortable: true, hideBelow: 'md' },
-  updated: { key: 'updated', label: 'Updated', width: 'sm', sortable: true, hideBelow: 'sm' }
+  updated: { key: 'updated', label: 'Updated', width: 'sm', sortable: true, hideBelow: 'sm' },
+  createdUser: { key: 'createdUser', label: 'Registered by', width: 'sm', sortable: true },
+  updatedUser: { key: 'updatedUser', label: 'Updated by', width: 'sm', sortable: true },
+  category: { key: 'category', label: 'Category', width: 'sm', sortable: true },
+  milestone: { key: 'milestone', label: 'Milestone', width: 'sm', sortable: true },
+  version: { key: 'version', label: 'Version', width: 'sm', sortable: true },
+  resolution: { key: 'resolution', label: 'Resolution', width: 'sm' },
+  estimatedHours: { key: 'estimatedHours', label: 'Estimated', width: 'xs', align: 'end', sortable: true },
+  actualHours: { key: 'actualHours', label: 'Actual', width: 'xs', align: 'end', sortable: true }
+}
+const COLUMN_ORDER = Object.keys(COLUMNS)
+
+/** A row's cell for each column. */
+function cellsOf(r: IssueRow): Record<string, TableCell> {
+  return {
+    key: r.key,
+    type: r.type,
+    summary: r.summary,
+    assignee: r.assignee,
+    status: r.status,
+    priority: r.priority,
+    created: { type: 'relative', at: r.created, format: 'short' },
+    startDate: r.startDate,
+    due: r.due,
+    updated: { type: 'relative', at: r.updated, format: 'short' },
+    createdUser: r.createdUser,
+    updatedUser: r.updatedUser,
+    category: r.category,
+    milestone: r.milestone,
+    version: r.version,
+    resolution: r.resolution,
+    estimatedHours: r.estimatedHours,
+    actualHours: r.actualHours
+  }
+}
+
+/** Which columns each table shows, kept per table; Key always stays so a row can be opened. */
+const shownColumns = atom<Record<string, string[]>>('shownColumns', {}, { persist: 'plugin' })
+/** The table whose column picker is open. */
+const pickingColumns = atom<string | null>(null)
+
+function columnsOf(table: string, defaults: readonly string[]): string[] {
+  const chosen = read(shownColumns)[table] ?? defaults
+  return COLUMN_ORDER.filter((c) => c === 'key' || chosen.includes(c))
+}
+
+function toggleColumn(table: string, defaults: readonly string[], column: string, on: boolean): void {
+  const now = columnsOf(table, defaults)
+  const next = on ? [...now, column] : now.filter((c) => c !== column)
+  set(shownColumns, { ...read(shownColumns), [table]: COLUMN_ORDER.filter((c) => next.includes(c)) })
+}
+
+/** Backlog's "columns" setting: a checkbox per field, open under the table's Columns button. */
+function ColumnPicker({ table, defaults }: { table: string; defaults: readonly string[] }) {
+  if (read(pickingColumns) !== table) return null
+  const shown = columnsOf(table, defaults)
+  return (
+    <Box border radius="md" padding="sm" gap="sm">
+      <Box columns={2} gap="xs">
+        {COLUMN_ORDER.map((c) => (
+          <Checkbox
+            key={c}
+            label={COLUMNS[c]!.label}
+            checked={shown.includes(c)}
+            disabled={c === 'key'}
+            onChange={(on) => toggleColumn(table, defaults, c, on)}
+          />
+        ))}
+      </Box>
+      <Row gap="xs">
+        <Button size="sm" variant="ghost" onPress={() => set(shownColumns, { ...read(shownColumns), [table]: [...defaults] })}>
+          Reset columns
+        </Button>
+        <Button size="sm" variant="ghost" onPress={() => set(pickingColumns, null)}>
+          Done
+        </Button>
+      </Row>
+    </Box>
+  )
 }
 
 const STATUS_TONE: Record<number, Tone> = { 1: 'danger', 2: 'accent', 3: 'success', 4: 'neutral' }
@@ -495,6 +604,7 @@ async function mapProject(projectId: string, accountId: string): Promise<void> {
 
 async function openIssue(key: string): Promise<void> {
   set(openKey, key)
+  set(pickedLink, null)
   set(detail, { issue: null, error: null })
   set(notice, null)
   try {
@@ -519,7 +629,6 @@ const inPart = (part: EditPart, name: string) => (part === 'text') === TEXT_FIEL
 function startEditing(issue: IssueDetail): void {
   set(editing, { key: issue.key, fields: issue.fields, comment: '' })
   set(editingText, false)
-  set(saveError, null)
   if (read(editMeta)?.projectId !== issue.projectId) void loadEditMeta(issue.projectId)
 }
 
@@ -528,7 +637,7 @@ async function loadEditMeta(projectId: number): Promise<void> {
   try {
     set(editMeta, { projectId, meta: await plugin.request('meta.get', { projectId: String(projectId) }) })
   } catch (error) {
-    set(saveError, `Cannot load the project's statuses and members: ${message(error)}`)
+    say('fields', 'danger', `Cannot load the project's statuses and members: ${message(error)}`)
   }
 }
 
@@ -549,7 +658,6 @@ async function saveIssue(issue: IssueDetail, part: EditPart): Promise<void> {
   const changes = changesOf(issue.fields, form, part)
   if (!Object.keys(changes).length) return
   set(saving, true)
-  set(saveError, null)
   try {
     const next = await plugin.request('issue.update', { key: issue.key, changes }, { timeoutMs: 120_000 })
     if (read(openKey) !== issue.key) return
@@ -564,12 +672,27 @@ async function saveIssue(issue: IssueDetail, part: EditPart): Promise<void> {
     if (part === 'text') set(editingText, false)
     const fields = Object.keys(changes).filter((c) => c !== 'comment').length
     const parts = [fields ? `Saved ${fields} field${fields > 1 ? 's' : ''}` : null, changes.comment ? 'comment added' : null]
-    set(notice, { tone: 'success', text: `${parts.filter(Boolean).join(', ')}.` })
+    say(part === 'text' ? 'header' : 'fields', 'success', `${parts.filter(Boolean).join(', ')}.`)
     refresh()
   } catch (error) {
-    set(saveError, message(error))
+    say(part === 'text' ? 'header' : 'fields', 'danger', message(error))
   } finally {
     set(saving, false)
+  }
+}
+
+/** Copy, the OS browser or Orca's own browser: the choices a link's right-click would offer. */
+async function linkAction(place: Place, url: string, how: 'copy' | 'browser' | 'orca'): Promise<void> {
+  try {
+    if (how === 'browser') {
+      const { opened } = await shell.openExternal(url)
+      if (!opened) return
+    } else if (how === 'copy') await plugin.request('link.copy', { url })
+    else await plugin.request('link.openInOrca', { url }, { timeoutMs: 60_000 })
+    const done = { copy: 'Copied', browser: 'Opened in the browser', orca: "Opened in Orca's browser" }[how]
+    say(place, 'success', `${done}: ${url}`)
+  } catch (error) {
+    say(place, 'danger', message(error))
   }
 }
 
@@ -578,7 +701,7 @@ async function loadRuns(key: string): Promise<void> {
     const runs = await plugin.request('runs.get', { key })
     if (read(openKey) === key) set(issueRuns, { key, runs })
   } catch (error) {
-    set(notice, { tone: 'danger', text: `Cannot list the issue's worktrees: ${message(error)}` })
+    say('launch', 'danger', `Cannot list the issue's worktrees: ${message(error)}`)
   }
 }
 
@@ -586,7 +709,7 @@ async function focusRun(workspaceId: string): Promise<void> {
   try {
     await plugin.request('runs.focus', { workspaceId })
   } catch (error) {
-    set(notice, { tone: 'danger', text: message(error) })
+    say('launch', 'danger', message(error))
   }
 }
 
@@ -601,7 +724,7 @@ async function refreshPrompt(key: string, reset = false): Promise<void> {
     const { prompt } = await plugin.request('launch.prompt', { key, agent, ...(skill ? { skill } : {}) })
     if (read(promptDraft)?.basis === basis) set(promptDraft, { basis, text: prompt, edited: false })
   } catch (error) {
-    set(notice, { tone: 'danger', text: `Cannot write the prompt: ${message(error)}` })
+    say('launch', 'danger', `Cannot write the prompt: ${message(error)}`)
   }
 }
 
@@ -642,18 +765,18 @@ async function loadLaunchOptions(): Promise<void> {
       agent: has(options.agents, c.agent) ? c.agent : (options.defaultAgent ?? '')
     })
   } catch (error) {
-    set(notice, { tone: 'danger', text: `Cannot list agents and skills: ${message(error)}` })
+    say('launch', 'danger', `Cannot list agents and skills: ${message(error)}`)
   }
 }
 
-async function openAttachment(key: string, attachmentId: number): Promise<void> {
-  set(notice, { tone: 'neutral', text: 'Downloading…' })
+async function openAttachment(key: string, attachmentId: number, place: Place = 'attachments'): Promise<void> {
+  say(place, 'neutral', 'Downloading…')
   try {
     const result = await plugin.request('attachment.open', { key, attachmentId }, { timeoutMs: 120_000 })
     const how = { preview: 'Opened in Orca', folder: 'Saved and opened its folder', external: 'Opened with the system viewer' }
-    set(notice, { tone: 'success', text: `${how[result.mode]}: ${result.path}` })
+    say(place, 'success', `${how[result.mode]}: ${result.path}`)
   } catch (error) {
-    set(notice, { tone: 'danger', text: message(error) })
+    say(place, 'danger', message(error))
   }
 }
 
@@ -661,7 +784,7 @@ async function startAgent(key: string): Promise<void> {
   const { target, agent, skill } = read(choice)
   const prompt = read(promptDraft)?.text.trim()
   set(launching, true)
-  set(notice, null)
+  say('launch', 'neutral', 'Starting the agent…')
   try {
     await plugin.request(
       'launch.start',
@@ -670,9 +793,9 @@ async function startAgent(key: string): Promise<void> {
     )
     void loadRuns(key)
     const label = read(launchOptions)?.agents.find((a) => a.value === agent)?.label ?? agent
-    set(notice, { tone: 'success', text: `${label} started on ${key}${skill ? ` with ${skill}` : ''}.` })
+    say('launch', 'success', `${label} started on ${key}${skill ? ` with ${skill}` : ''}.`)
   } catch (error) {
-    set(notice, { tone: 'danger', text: message(error) })
+    say('launch', 'danger', message(error))
   } finally {
     set(launching, false)
   }
@@ -693,15 +816,6 @@ function ErrorCallout({ title, text }: { title: string; text: string | null }) {
   return text ? (
     <Callout tone="danger" title={title}>
       <Text size="sm">{text}</Text>
-    </Callout>
-  ) : null
-}
-
-function Notice() {
-  const n = read(notice)
-  return n ? (
-    <Callout tone={n.tone}>
-      <Text size="sm">{n.text}</Text>
     </Callout>
   ) : null
 }
@@ -772,15 +886,26 @@ function Segmented<T extends string>(props: {
 function IssueTable(props: {
   label: string
   state: ListState
+  /** Names the table's own column choice. */
+  table: string
+  /** Shown until the person picks. */
   columns: readonly string[]
   sort: TableSort
   onSort: (sort: TableSort) => void
   onLoadMore: () => void
 }) {
   const { state } = props
+  const columns = columnsOf(props.table, props.columns)
+  const picking = read(pickingColumns) === props.table
   return (
     <Stack gap="xs">
       <ErrorCallout title="Backlog" text={state.error} />
+      <Row justify="end">
+        <Button size="sm" variant="ghost" icon="settings" onPress={() => set(pickingColumns, picking ? null : props.table)}>
+          {`Columns (${columns.length})`}
+        </Button>
+      </Row>
+      <ColumnPicker table={props.table} defaults={props.columns} />
       <Table
         label={props.label}
         maxHeight="none"
@@ -793,18 +918,8 @@ function IssueTable(props: {
         onSortChange={props.onSort}
         onSelectionChange={({ keys }) => keys[0] && openFromList(keys[0])}
         onRowAction={({ key }) => openFromList(key)}
-        columns={props.columns.map((c) => COLUMNS[c]!)}
-        rows={state.rows.map((r) => ({
-          key: r.key,
-          cells: {
-            key: r.key,
-            summary: r.summary,
-            status: r.status,
-            priority: r.priority,
-            due: r.due,
-            updated: { type: 'relative', at: r.updated, format: 'short' }
-          }
-        }))}
+        columns={columns.map((c) => COLUMNS[c]!)}
+        rows={state.rows.map((r) => ({ key: r.key, cells: cellsOf(r) }))}
       />
     </Stack>
   )
@@ -1125,6 +1240,7 @@ function HomeView({ me }: { me: Session }) {
           <Segmented options={DUE_TABS} value={d.due} counts={counts} onChange={(due) => setDashboard({ due })} />
           <IssueTable
             label="My issues"
+            table="home"
             state={read(dashList)}
             columns={['key', 'summary', 'priority', 'status', 'due']}
             sort={d.sort}
@@ -1264,6 +1380,7 @@ function IssuesView({ me }: { me: Session }) {
       <AdvancedFilters />
       <IssueTable
         label="Issues"
+        table="issues"
         state={l}
         columns={['key', 'summary', 'status', 'priority', 'due', 'updated']}
         sort={f.sort}
@@ -1311,6 +1428,7 @@ function LaunchCard({ issue }: { issue: IssueDetail }) {
         <Button tone="accent" icon="agent" disabled={!c.target || !c.agent || read(launching)} onPress={() => startAgent(issue.key)}>
           {read(launching) ? 'Starting…' : 'Start agent'}
         </Button>
+        <Notice place="launch" />
       </Stack>
     </Card>
   )
@@ -1388,8 +1506,7 @@ function DetailHeader({ issueKey, issue }: { issueKey: string; issue: IssueDetai
       ) : (
         <Text weight="semibold">{issue.summary}</Text>
       )}
-      <ErrorCallout title="Cannot save" text={read(saveError)} />
-      <Notice />
+      <Notice place="header" />
     </Stack>
   )
 }
@@ -1401,7 +1518,6 @@ function cancelText(issue: IssueDetail): void {
     set(editing, { ...form, fields: { ...form.fields, summary: issue.fields.summary, description: issue.fields.description } })
   }
   set(editingText, false)
-  set(saveError, null)
 }
 
 /** An image reference the worker rewrote: `![alt](attachment:<id>)`. */
@@ -1411,7 +1527,7 @@ const ATTACHMENT_IMAGE = new RegExp(String.raw`!\[([^\]]*)\]\(` + ATTACHMENT_SCH
  * Backlog text with each image reference as a button that opens the image in Orca's preview.
  * Inline pictures would need files inside the plugin folder, which an installed plugin must not change.
  */
-function RichText({ content, issueKey }: { content: string; issueKey: string }) {
+function RichText({ content, issueKey, place }: { content: string; issueKey: string; place: Place }) {
   const parts: OrcaNode[] = []
   let last = 0
   for (const match of content.matchAll(ATTACHMENT_IMAGE)) {
@@ -1420,7 +1536,7 @@ function RichText({ content, issueKey }: { content: string; issueKey: string }) 
     if (text.trim()) parts.push(<Markdown key={`t${last}`} content={text} />)
     parts.push(
       <Row key={`i${match.index}`}>
-        <Button size="sm" variant="outline" icon="file" onPress={() => openAttachment(issueKey, Number(id))}>
+        <Button size="sm" variant="outline" icon="file" onPress={() => openAttachment(issueKey, Number(id), place)}>
           {`Open preview · ${alt || 'image'}`}
         </Button>
       </Row>
@@ -1456,22 +1572,95 @@ function LinkedIssues({ issue }: { issue: IssueDetail }) {
   )
 }
 
+const isPicked = (list: string, url: string) => {
+  const p = read(pickedLink)
+  return p?.list === list && p.url === url
+}
+/** A second press on the picked link hides its actions again. */
+const pickLink = (list: string, url: string) => set(pickedLink, isPicked(list, url) ? null : { list, url })
+
+/** Under a list: what can be done with its picked link. */
+function LinkActions({ list }: { list: 'links' | 'pullRequests' }) {
+  const p = read(pickedLink)
+  if (p?.list !== list) return null
+  return (
+    <Row gap="xs" wrap>
+      <Button size="sm" icon="copy" onPress={() => linkAction(list, p.url, 'copy')}>
+        Copy link
+      </Button>
+      <Button size="sm" icon="open-external" onPress={() => linkAction(list, p.url, 'browser')}>
+        Open in browser
+      </Button>
+      <Button size="sm" icon="globe" onPress={() => linkAction(list, p.url, 'orca')}>
+        Open in Orca
+      </Button>
+    </Row>
+  )
+}
+
+/** The last result for one place, as a line of text where the action was. */
+function Notice({ place }: { place: Place }) {
+  const n = read(notice)
+  if (n?.place !== place) return null
+  return (
+    <Text size="sm" {...(n.tone === 'neutral' ? { muted: true } : { tone: n.tone })}>
+      {n.text}
+    </Text>
+  )
+}
+
+const LINK_ICON: Record<IssueLink['from'], IconName> = {
+  issue: 'layers',
+  'pull request': 'branch',
+  description: 'link',
+  comment: 'link'
+}
+
+/** Every web link of the issue, its own page first; press one for its actions. */
+function Links({ issue }: { issue: IssueDetail }) {
+  return (
+    <Section title={`Links (${issue.links.length})`} id="links">
+      <Stack gap="xs">
+        <List label="Links">
+          {issue.links.map((l) => (
+            <ListItem
+              key={l.url}
+              icon={LINK_ICON[l.from]}
+              title={l.label}
+              description={l.from === 'issue' ? l.url : `${l.from} · ${l.url}`}
+              current={isPicked('links', l.url)}
+              onPress={() => pickLink('links', l.url)}
+            />
+          ))}
+        </List>
+        <LinkActions list="links" />
+        <Notice place="links" />
+      </Stack>
+    </Section>
+  )
+}
+
 function PullRequests({ issue }: { issue: IssueDetail }) {
   const prs = issue.pullRequests
   return (
     <Section title={`Pull requests (${prs.length})`} id="pullRequests">
       {prs.length ? (
-        <List label="Pull requests">
-          {prs.map((pr) => (
-            <ListItem
-              key={pr.key}
-              icon="branch"
-              title={`#${pr.number} ${pr.summary}`}
-              description={`${pr.status} · ${pr.repo}: ${pr.branch} → ${pr.base}${pr.author ? ` · ${pr.author}` : ''}`}
-              onPress={() => shell.openExternal(pr.url)}
-            />
-          ))}
-        </List>
+        <Stack gap="xs">
+          <List label="Pull requests">
+            {prs.map((pr) => (
+              <ListItem
+                key={pr.key}
+                icon="branch"
+                title={`#${pr.number} ${pr.summary}`}
+                description={`${pr.status} · ${pr.repo}: ${pr.branch} → ${pr.base}${pr.author ? ` · ${pr.author}` : ''}`}
+                current={isPicked('pullRequests', pr.url)}
+                onPress={() => pickLink('pullRequests', pr.url)}
+              />
+            ))}
+          </List>
+          <LinkActions list="pullRequests" />
+          <Notice place="pullRequests" />
+        </Stack>
       ) : (
         <Text muted size="sm">
           No pull request links this issue.
@@ -1531,6 +1720,7 @@ function IssueBody({ issue }: { issue: IssueDetail }) {
       />
       <LinkedIssues issue={issue} />
       <PullRequests issue={issue} />
+      <Links issue={issue} />
       <Worktrees issue={issue} />
       <LaunchCard issue={issue} />
       <Section title="Description" id="description">
@@ -1549,6 +1739,7 @@ function IssueBody({ issue }: { issue: IssueDetail }) {
           ))}
         </List>
       ) : null}
+      <Notice place="attachments" />
       <Section title={`Comments (${issue.comments.length})`} id="comments">
         <Stack gap="md">
           {issue.comments.length ? null : <Text muted>No comments.</Text>}
@@ -1561,7 +1752,7 @@ function IssueBody({ issue }: { issue: IssueDetail }) {
                 </Text>
                 <RelativeTime at={c.created} muted />
               </Row>
-              <RichText content={c.content} issueKey={issue.key} />
+              <RichText content={c.content} issueKey={issue.key} place="comments" />
             </Stack>
           ))}
         </Stack>
@@ -1622,7 +1813,12 @@ function Description({ issue }: { issue: IssueDetail }) {
       />
     )
   }
-  return issue.description ? <RichText content={issue.description} issueKey={issue.key} /> : <Text muted>No description.</Text>
+  return (
+    <Stack gap="xs">
+      {issue.description ? <RichText content={issue.description} issueKey={issue.key} place="description" /> : <Text muted>No description.</Text>}
+      <Notice place="description" />
+    </Stack>
+  )
 }
 
 /**
@@ -1704,6 +1900,7 @@ function UpdateFields({ issue }: { issue: IssueDetail }) {
             </FilterRow>
           </Stack>
         )}
+        <Notice place="fields" />
         <Row gap="xs" wrap>
           <Button tone="accent" icon="check" disabled={busy || !dirty} onPress={() => saveIssue(issue, 'fields')}>
             {label}
