@@ -307,7 +307,7 @@ function resetColumns(table: string): void {
   set(columnWidths, widths)
 }
 
-/** The table whose column picker is open. */
+/** The open picker: `<table>:columns` or `<table>:widths`. */
 const pickingColumns = atom<string | null>(null)
 
 /** Whether the table's columns or widths differ from its defaults. */
@@ -326,42 +326,62 @@ function toggleColumn(table: string, defaults: readonly string[], column: string
 
 /** Backlog's "columns" setting: a checkbox per field, open under the table's Columns button. */
 function ColumnPicker({ table, defaults }: { table: string; defaults: readonly string[] }) {
-  if (read(pickingColumns) !== table) return null
+  if (read(pickingColumns) !== `${table}:columns`) return null
   const shown = columnsOf(table, defaults)
   return (
     <Box border radius="md" padding="sm" gap="sm">
-      <Row gap="xs" wrap>
+      <Box columns={3} gap="xs">
         {COLUMN_ORDER.map((c) => (
-          <Box key={c} direction="row" gap="xs" align="center" grow minWidth={220}>
-            <Box grow>
-              <Checkbox
-                label={COLUMNS[c]!.label}
-                checked={shown.includes(c)}
-                disabled={c === 'key'}
-                onChange={(on) => toggleColumn(table, defaults, c, on)}
-              />
-            </Box>
-            {shown.includes(c) ? (
-              <Box width={110} shrink={false}>
-                <Select
-                  label={`${COLUMNS[c]!.label} width`}
-                  labelHidden
-                  value={read(columnWidths)[table]?.[c] ?? 'default'}
-                  options={WIDTH_OPTIONS}
-                  onChange={(w) => setWidth(table, c, w)}
-                />
-              </Box>
-            ) : null}
-          </Box>
+          <Checkbox
+            key={c}
+            label={COLUMNS[c]!.label}
+            checked={shown.includes(c)}
+            disabled={c === 'key'}
+            onChange={(on) => toggleColumn(table, defaults, c, on)}
+          />
         ))}
-      </Row>
-      <Text muted size="xs">
-        Widths last until you leave this list; the columns you pick stay.
-      </Text>
-      <Row gap="xs">
-        <Button size="sm" variant="ghost" onPress={() => resetColumns(table)}>
-          Reset columns
+      </Box>
+      <Row justify="end">
+        <Button size="sm" variant="ghost" onPress={() => set(pickingColumns, null)}>
+          Done
         </Button>
+      </Row>
+    </Box>
+  )
+}
+
+/**
+ * Widths of the shown columns: the name on the left, its width on the right. Orca's Table has
+ * no drag-to-resize, only these sizes.
+ */
+function WidthPicker({ table, defaults }: { table: string; defaults: readonly string[] }) {
+  if (read(pickingColumns) !== `${table}:widths`) return null
+  return (
+    <Box border radius="md" padding="sm" gap="xs">
+      {columnsOf(table, defaults).map((c) => (
+        <Row key={c} gap="sm" align="center">
+          <Box grow minWidth={0}>
+            <Text size="sm" truncate>
+              {COLUMNS[c]!.label}
+            </Text>
+          </Box>
+          <Box width={130} shrink={false}>
+            <Select
+              label={`${COLUMNS[c]!.label} width`}
+              labelHidden
+              value={read(columnWidths)[table]?.[c] ?? 'default'}
+              options={WIDTH_OPTIONS}
+              onChange={(w) => setWidth(table, c, w)}
+            />
+          </Box>
+        </Row>
+      ))}
+      <Row gap="xs" align="center">
+        <Box grow minWidth={0}>
+          <Text muted size="xs">
+            Widths last until you leave this list.
+          </Text>
+        </Box>
         <Button size="sm" variant="ghost" onPress={() => set(pickingColumns, null)}>
           Done
         </Button>
@@ -961,7 +981,11 @@ function IssueTable(props: {
 }) {
   const { state } = props
   const columns = columnsOf(props.table, props.columns)
-  const picking = read(pickingColumns) === props.table
+  const picking = read(pickingColumns)
+  const toggle = (what: 'columns' | 'widths') => {
+    const id = `${props.table}:${what}`
+    set(pickingColumns, picking === id ? null : id)
+  }
   return (
     <Stack gap="xs">
       <ErrorCallout title="Backlog" text={state.error} />
@@ -969,11 +993,15 @@ function IssueTable(props: {
         <Button size="sm" variant="ghost" icon="refresh" disabled={!customised(props.table)} onPress={() => resetColumns(props.table)}>
           Reset columns
         </Button>
-        <Button size="sm" variant="ghost" icon="settings" onPress={() => set(pickingColumns, picking ? null : props.table)}>
+        <Button size="sm" variant="ghost" icon="expand" onPress={() => toggle('widths')}>
+          Widths
+        </Button>
+        <Button size="sm" variant="ghost" icon="settings" onPress={() => toggle('columns')}>
           {`Columns (${columns.length})`}
         </Button>
       </Row>
       <ColumnPicker table={props.table} defaults={props.columns} />
+      <WidthPicker table={props.table} defaults={props.columns} />
       <Table
         label={props.label}
         maxHeight="none"
@@ -1679,7 +1707,10 @@ function LinkRow(props: { list: 'links' | 'pullRequests'; url: string; title: st
     <Stack gap="xs">
       <Row gap="xs" align="center">
         <Box grow minWidth={0} gap="none">
-          <Link href={url}>{title}</Link>
+          {/* Orca draws a Link as a button, which centres its text when stretched; a Row keeps it at the start. */}
+          <Row gap="none">
+            <Link href={url}>{title}</Link>
+          </Row>
           <Text muted size="xs" truncate>
             {description}
           </Text>
