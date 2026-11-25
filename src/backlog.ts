@@ -3,7 +3,14 @@
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { certificatesApplied } from './certificates'
 import { appDataDir } from './platform'
+
+/** `fetch failed` hides the reason in `cause`; surface its code (e.g. SELF_SIGNED_CERT_IN_CHAIN). */
+function reasonOf(error: unknown): string {
+  const cause = (error as { cause?: { code?: string; message?: string } }).cause
+  return cause?.code ?? cause?.message ?? (error as Error).message
+}
 
 export type Credentials = { space: string; apiKey: string }
 type Scalar = string | number | boolean
@@ -29,11 +36,12 @@ function buildUrl({ space, apiKey }: Credentials, path: string, query: Query = {
 
 /** Raw response, for attachments. Throws Backlog's own error message on a failure. */
 export async function request(creds: Credentials, path: string, query?: Query): Promise<Response> {
+  await certificatesApplied()
   let response: Response
   try {
     response = await fetch(buildUrl(creds, path, query))
   } catch (error) {
-    throw new Error(`Cannot reach ${creds.space}: ${(error as Error).message}`)
+    throw new Error(`Cannot reach ${creds.space}: ${reasonOf(error)}`)
   }
   if (response.ok) return response
   const body = (await response.json().catch(() => null)) as { errors?: { message: string }[] } | null

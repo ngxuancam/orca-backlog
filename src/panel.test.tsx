@@ -131,6 +131,31 @@ test('settings lists accounts and maps an Orca project to one', async () => {
   assert.deepEqual(view.refusals, [])
 })
 
+test('connection settings trust a CA file and test the space', async () => {
+  let saved: unknown
+  const status = (s: { system: boolean; caFile: string }) => ({ ...s, node: 140, systemCount: 60, fileCount: s.caFile ? 1 : 0 })
+  view = await mount(panel, {
+    host: host(true, {
+      'settings.get': () => ({ accounts, projects: [] }),
+      'connection.get': () => status({ system: true, caFile: '' }),
+      'connection.set': (input) => ((saved = input), status(input as { system: boolean; caFile: string })),
+      'connection.test': () => ({ ok: false, message: 'Cannot reach acme.backlog.com: SELF_SIGNED_CERT_IN_CHAIN' })
+    })
+  })
+  await view.settled()
+  await view.press({ label: 'Settings' })
+  const shown = () => JSON.stringify(view?.tree())
+  assert.match(shown(), /200 certificates/)
+  await view.type({ label: 'Extra CA certificate file (PEM)' }, 'C:\certs\root.pem')
+  await view.press({ role: 'button', text: 'Apply' })
+  assert.deepEqual(saved, { system: true, caFile: 'C:\certs\root.pem' })
+  assert.match(shown(), /201 certificates/)
+  await view.press({ role: 'button', text: 'Test connection' })
+  assert.ok(view.find({ text: /SELF_SIGNED_CERT_IN_CHAIN/ }))
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+})
+
 test('advanced filters narrow the list and reset with the project', async () => {
   view = await mount(panel, {
     host: host(true),
