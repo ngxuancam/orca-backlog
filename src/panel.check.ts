@@ -53,6 +53,22 @@ const detail: IssueDetail = {
   typeColor: '#ea733b',
   url: 'https://acme.backlog.com/view/SHOP-142',
   projectId: 10,
+  fields: {
+    summary: 'Apple Pay button misaligned on checkout',
+    description: 'Steps to reproduce: open the cart on Safari 18, go to Checkout.',
+    statusId: '2',
+    resolutionId: '',
+    assigneeId: '1',
+    priorityId: '2',
+    issueTypeId: '20',
+    categoryIds: ['30'],
+    milestoneIds: ['41'],
+    versionIds: [],
+    startDate: '2026-11-24',
+    dueDate: '2026-12-02',
+    estimatedHours: '3',
+    actualHours: ''
+  },
   description: [
     '### Steps to reproduce',
     '1. Open the cart on Safari 18',
@@ -121,6 +137,11 @@ const requests = {
     ]
   }),
   'credentials.found': () => [],
+  'audit.list': () => [
+    { id: 'a3', at: now - 5 * 60_000, action: 'Updated issue', api: 'PATCH /api/v2/issues/SHOP-142', target: 'SHOP-142', details: 'status → 2; comment "Fix is up for review"', space: 'acme.backlog.com', ok: true },
+    { id: 'a2', at: now - 40 * 60_000, action: 'Started agent', api: 'orca agent launch', target: 'SHOP-142', details: 'claude · fixbug-backlog', space: 'acme.backlog.com', ok: true },
+    { id: 'a1', at: now - 2 * hour, action: 'Commented on issue', api: 'POST /api/v2/issues/MOB-88/comments', target: 'MOB-88', details: 'comment "Can reproduce on iOS 18"', space: 'acme.backlog.com', ok: false, error: 'Backlog 403: No permission' }
+  ],
   'launch.prompt': (input: { key: string; skill?: string }) => ({ prompt: input.skill ? `/${input.skill} ${input.key}` : `Work on Backlog issue ${input.key}` }),
   'connection.get': () => ({ system: true, caFile: '', node: 146, systemCount: 61, fileCount: 0 })
 }

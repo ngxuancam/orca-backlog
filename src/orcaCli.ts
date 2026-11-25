@@ -16,9 +16,9 @@ function orcaBinary(): string {
   return candidates.find((path) => existsSync(path)) ?? 'orca'
 }
 
-function orcaJson<T>(args: string[]): Promise<T> {
+function orcaJson<T>(args: string[], timeout = 20_000): Promise<T> {
   return new Promise((resolve, reject) => {
-    execFile(orcaBinary(), [...args, '--json'], { timeout: 20_000, windowsHide: true, maxBuffer: 8 << 20, env: cliEnv() }, (error, stdout) => {
+    execFile(orcaBinary(), [...args, '--json'], { timeout, windowsHide: true, maxBuffer: 8 << 20, env: cliEnv() }, (error, stdout) => {
       try {
         const parsed = JSON.parse(stdout) as { ok: boolean; result: T; error?: { message: string } }
         if (parsed.ok) resolve(parsed.result)
@@ -52,3 +52,45 @@ export async function installedSkills(): Promise<SkillOption[]> {
   }
   return [...byName.values()].sort((a, b) => a.label.localeCompare(b.label))
 }
+
+/** Where an agent starts: an existing workspace, or a new worktree of a project. */
+export type LaunchTarget = { workspaceId: string } | { projectId: string; hostId?: string; name: string }
+
+/** Windows caps a command line near 32K characters; longer prompts go through the host API. */
+export const MAX_CLI_PROMPT = 24_000
+
+/**
+ * Starts an agent with its first message the way Orca's own new agent tab does, and shows it.
+ * The host API's `agent.launch` opens the agent but can drop the prompt (Orca 1.4.272), so the
+ * CLI, which starts the agent and submits the prompt as one launch, is used instead.
+ */
+export async function launchWithPrompt(target: LaunchTarget, agent: string, prompt: string): Promise<{ workspaceId: string }> {
+  if ('workspaceId' in target) {
+    const { workspaceId } = target
+    const worktree = workspaceId.startsWith('folder:') ? workspaceId : `id:${workspaceId}`
+    await orcaJson(['agent', 'launch', '--agent', agent, '--worktree', worktree, '--prompt', prompt, '--focus'], 120_000)
+    return { workspaceId }
+  }
+  const { projectId, hostId, name } = target
+  const result = await orcaJson<{ worktree?: { id?: string }; worktreeId?: string }>(
+    [
+      'worktree',
+      'create',
+      '--project',
+      projectId,
+      ...(hostId ? ['--host', hostId] : []),
+      '--name',
+      name,
+      '--agent',
+      agent,
+      '--prompt',
+      prompt,
+      '--activate'
+    ],
+    300_000
+  )
+  return { workspaceId: result.worktree?.id ?? result.worktreeId ?? '' }
+}
+
+/** What the worker launches with; tests swap it to keep the real CLI out. */
+export const cliLauncher = { launchWithPrompt }

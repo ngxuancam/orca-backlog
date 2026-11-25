@@ -23,23 +23,34 @@ export function normalizeSpace(input: string): string {
   return host.toLowerCase()
 }
 
+/** Backlog's encoding: lists as `name[]`; an empty list as one empty `name[]`, which clears it. */
+function appendParams(params: URLSearchParams, values: Query): URLSearchParams {
+  for (const [name, value] of Object.entries(values)) {
+    if (value === undefined) continue
+    if (Array.isArray(value)) {
+      if (!value.length) params.append(`${name}[]`, '')
+      for (const item of value) params.append(`${name}[]`, String(item))
+    } else params.set(name, String(value))
+  }
+  return params
+}
+
 function buildUrl({ space, apiKey }: Credentials, path: string, query: Query = {}): string {
   const url = new URL(`https://${space}/api/v2${path}`)
   url.searchParams.set('apiKey', apiKey)
-  for (const [name, value] of Object.entries(query)) {
-    if (value === undefined) continue
-    if (Array.isArray(value)) for (const item of value) url.searchParams.append(`${name}[]`, String(item))
-    else url.searchParams.set(name, String(value))
-  }
+  appendParams(url.searchParams, query)
   return url.toString()
 }
 
 /** Raw response, for attachments. Throws Backlog's own error message on a failure. */
-export async function request(creds: Credentials, path: string, query?: Query): Promise<Response> {
+export async function request(creds: Credentials, path: string, query?: Query, write?: Write): Promise<Response> {
   await certificatesApplied()
   let response: Response
   try {
-    response = await fetch(buildUrl(creds, path, query))
+    response = await fetch(
+      buildUrl(creds, path, query),
+      write ? { method: write.method, body: appendParams(new URLSearchParams(), write.form) } : undefined
+    )
   } catch (error) {
     throw new Error(`Cannot reach ${creds.space}: ${reasonOf(error)}`)
   }
@@ -47,6 +58,13 @@ export async function request(creds: Credentials, path: string, query?: Query): 
   const body = (await response.json().catch(() => null)) as { errors?: { message: string }[] } | null
   const message = body?.errors?.map((e) => e.message).join('; ') || response.statusText
   throw new Error(`Backlog ${response.status}: ${message}`)
+}
+
+/** A change to Backlog, sent as a form like backlog-js sends it. */
+export type Write = { method: 'POST' | 'PATCH'; form: Query }
+
+export async function send<T>(creds: Credentials, write: Write, path: string): Promise<T> {
+  return (await (await request(creds, path, undefined, write)).json()) as T
 }
 
 export async function api<T>(creds: Credentials, path: string, query?: Query): Promise<T> {

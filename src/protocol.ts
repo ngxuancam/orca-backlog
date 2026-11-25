@@ -37,6 +37,17 @@ export type FoundCredential = {
   error?: string
 }
 
+/** A workspace an agent was started in for an issue, remembered on this computer. */
+export type IssueRun = {
+  workspaceId: string
+  /** `project / worktree`, as Orca names it now. */
+  label: string
+  branch: string | null
+  agent: string
+  skill?: string
+  startedAt: number
+}
+
 export type AccountSettings = {
   accounts: Account[]
   /** Orca projects, each with the account it uses (`''`: the last used one). */
@@ -147,7 +158,47 @@ export type PullRequest = {
   url: string
 }
 
+/** One change the plugin made, to Backlog or on this computer. */
+export type AuditEntry = {
+  id: string
+  at: number
+  /** What was done, e.g. "Updated issue". */
+  action: string
+  /** The API that did it: `PATCH /api/v2/issues/APP-1`, `orca agent launch`, `plugin storage`… */
+  api: string
+  /** What it was done to: an issue key, a space, a file. */
+  target?: string
+  details?: string
+  /** The Backlog space in use. */
+  space?: string
+  ok: boolean
+  error?: string
+}
+
+/** An issue's editable values, as Backlog ids in strings; `''` for none. Dates are `yyyy-MM-dd`. */
+export type IssueFields = {
+  summary: string
+  description: string
+  statusId: string
+  resolutionId: string
+  assigneeId: string
+  priorityId: string
+  issueTypeId: string
+  categoryIds: string[]
+  milestoneIds: string[]
+  versionIds: string[]
+  startDate: string
+  dueDate: string
+  estimatedHours: string
+  actualHours: string
+}
+
+/** Only the fields that changed, and an optional comment Backlog records with them. */
+export type IssueChanges = Partial<IssueFields> & { comment?: string }
+
 export type IssueDetail = IssueRow & {
+  /** What the edit form starts from. */
+  fields: IssueFields
   url: string
   projectId: number
   description: string
@@ -193,6 +244,10 @@ declare module 'orca' {
     'account.use': { input: { id: string }; output: AuthState }
     'account.remove': { input: { id: string }; output: AuthState }
     'settings.get': { output: AccountSettings }
+    /** Every change the plugin made, newest first (at most 500). */
+    'audit.list': { output: AuditEntry[] }
+    /** Empties the audit log, leaving one entry that says so. */
+    'audit.clear': { output: AuditEntry[] }
     /** `accountId` empty: the project follows the last used account. */
     'settings.map': { input: { projectId: string; accountId: string }; output: AccountSettings }
     'connection.get': { output: CertificateStatus }
@@ -204,12 +259,18 @@ declare module 'orca' {
     'issues.list': { input: IssueQuery; output: { issues: IssueRow[]; total: number } }
     'issues.count': { input: IssueFilter; output: { count: number } }
     'issue.get': { input: { key: string }; output: IssueDetail }
+    /** Saves changed fields (with the comment, if any), or only adds the comment; answers the issue again. */
+    'issue.update': { input: { key: string; changes: IssueChanges }; output: IssueDetail }
     /** Images and videos open in Orca's preview; other files land in Downloads and their folder opens. */
     'attachment.open': {
       input: { key: string; attachmentId: number }
       output: { path: string; mode: 'preview' | 'folder' | 'external' }
     }
     'launch.options': { output: LaunchOptions }
+    /** Workspaces agents were started in for an issue, newest first; gone ones are dropped. */
+    'runs.get': { input: { key: string }; output: IssueRun[] }
+    /** Shows a workspace in Orca. */
+    'runs.focus': { input: { workspaceId: string }; output: { opened: boolean } }
     /** The first message for an agent: `/skill KEY` with a skill, else a brief of the issue. */
     'launch.prompt': { input: { key: string; agent: string; skill?: string }; output: { prompt: string } }
     /** `prompt` as given (edited in the panel), else the one `launch.prompt` answers. */
