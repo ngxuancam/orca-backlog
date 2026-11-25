@@ -120,11 +120,21 @@ const requests = {
       { value: 'p3', label: 'dotfiles', accountId: '' }
     ]
   }),
+  'credentials.found': () => [],
+  'launch.prompt': (input: { key: string; skill?: string }) => ({ prompt: input.skill ? `/${input.skill} ${input.key}` : `Work on Backlog issue ${input.key}` }),
   'connection.get': () => ({ system: true, caFile: '', node: 146, systemCount: 61, fileCount: 0 })
 }
 
 export default defineCheck({
-  signedOut: { requests: { 'auth.status': () => ({ session: null, accounts: [], orcaProject: null }) } },
+  signedOut: {
+    requests: {
+      'auth.status': () => ({ session: null, accounts: [], orcaProject: null }),
+      'credentials.found': () => [
+        { id: 'c1', space: 'acme.backlog.com', file: '~/.claude.json', keyHint: '…9f2c', saved: false },
+        { id: 'c2', space: 'old-team.backlog.jp', file: '~/acme-shop/.mcp.json', keyHint: '…71ab', saved: false, error: 'Backlog 401: Authentication failure' }
+      ]
+    }
+  },
   home: { requests, persisted: { plugin: { screen: 'home', openKey: null } } },
   issues: {
     requests,

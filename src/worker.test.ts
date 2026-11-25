@@ -163,11 +163,28 @@ test('login adds an account and tells open panels', async () => {
   assert.equal(worker.posts.at(-1)?.event, 'auth.changed')
 })
 
-test('the agent prompt names the skill and the issue', () => {
-  const prompt = main.buildPrompt(issue as never, 'https://acme.backlog.com/view/APP-1', 'code-review')
-  assert.match(prompt, /^Use the "code-review" skill/)
-  assert.match(prompt, /APP-1: Fix login/)
-  assert.match(prompt, /Attachments: shot\.png/)
+test('a skill starts as its command; without one the agent gets a brief of the issue', async () => {
+  stubBacklog()
+  const host = saved()
+  host.respond('agent.launch', { terminalId: 't1' })
+  host.respond('workspace.open', { opened: true })
+  host.respond('terminal.focus', { focused: true })
+  const worker = await mountWorker(main, { host })
+  await worker.request('auth.status')
+  const prompt = async (agent: string, skill?: string) =>
+    (await worker.request('launch.prompt', { key: 'APP-1', agent, ...(skill ? { skill } : {}) })).prompt
+  assert.equal(await prompt('claude', 'fixbug-backlog'), '/fixbug-backlog APP-1')
+  assert.equal(await prompt('codex', 'fixbug-backlog'), '$fixbug-backlog APP-1')
+  const brief = await prompt('claude')
+  assert.match(brief, /^Work on Backlog issue APP-1: Fix login/)
+  assert.match(brief, /Attachments: shot\.png/)
+
+  await worker.request('launch.start', { key: 'APP-1', target: 'ws:w1', agent: 'claude', skill: 'fixbug-backlog' })
+  assert.deepEqual(host.callsOf('agent.launch').at(-1), { workspaceId: 'w1', agent: 'claude', prompt: '/fixbug-backlog APP-1' })
+  assert.deepEqual(host.callsOf('terminal.focus').at(-1), { terminalId: 't1' })
+  await worker.request('launch.start', { key: 'APP-1', target: 'ws:w1', agent: 'claude', prompt: '  Only fix the CSS  ' })
+  assert.deepEqual(host.callsOf('agent.launch').at(-1), { workspaceId: 'w1', agent: 'claude', prompt: 'Only fix the CSS' })
+  assert.deepEqual(worker.refusals, [])
 })
 
 test('members who share a name are told apart by their login', async () => {
@@ -178,4 +195,52 @@ test('members who share a name are told apart by their login', async () => {
     meta.users.map((u) => u.label),
     ['Me', 'Trang (trangtth)', 'Trang (trangttm6)']
   )
+})
+
+test('finds backlog-mcp-server entries on this machine and signs in with a chosen one', async () => {
+  const { mkdtemp, mkdir, rm, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const home = await mkdtemp(join(tmpdir(), 'orca-backlog-home-'))
+  const workspace = join(home, 'repo')
+  await mkdir(workspace)
+  const env = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, APPDATA: process.env.APPDATA }
+  Object.assign(process.env, { HOME: home, USERPROFILE: home, APPDATA: join(home, 'AppData') })
+  try {
+    const server = (domain: string, key: string) => ({ command: 'npx', env: { BACKLOG_DOMAIN: domain, BACKLOG_API_KEY: key } })
+    await writeFile(join(home, '.claude.json'), JSON.stringify({ mcpServers: { backlog: server('nope.backlog.com', 'bad1') } }))
+    await writeFile(join(workspace, '.mcp.json'), JSON.stringify({ mcpServers: { backlog: server('https://acme.backlog.com/', 'k') } }))
+    stubBacklog()
+    globalThis.fetch = ((original) => async (input: string | URL) =>
+      new URL(String(input)).host === 'nope.backlog.com'
+        ? new Response(JSON.stringify({ errors: [{ message: 'Authentication failure' }] }), { status: 401 })
+        : original(input))(globalThis.fetch) as typeof fetch
+    const host = mockHost({
+      results: {
+        'workspace.readContext': { workspaceId: 'w1', branch: 'main', displayName: 'repo', terminals: [] },
+        'workspace.list': {
+          workspaces: [{ id: 'w1', kind: 'worktree', name: 'main', project: 'Repo', projectId: 'p1', path: workspace, branch: 'main', hostId: 'local' }],
+          truncated: false
+        }
+      }
+    })
+    const worker = await mountWorker(main, { host })
+    // With no account, the first entry that works is imported on its own.
+    assert.equal((await worker.request('auth.status')).session?.accountId, ACME)
+    const found = await worker.request('credentials.found')
+    assert.deepEqual(
+      found.map(({ space, file, keyHint, saved: isSaved, error }) => ({ space, file, keyHint, saved: isSaved, error })),
+      [
+        { space: 'nope.backlog.com', file: join('~', '.claude.json'), keyHint: '…bad1', saved: false, error: 'Backlog 401: Authentication failure' },
+        { space: 'acme.backlog.com', file: join('~', 'repo', '.mcp.json'), keyHint: '…k', saved: true, error: undefined }
+      ]
+    )
+    assert.ok(!JSON.stringify(found).includes('"bad1"'), 'keys stay in the worker')
+    await assert.rejects(worker.request('credentials.use', { id: found[0]!.id }), /Authentication failure/)
+    const state = await worker.request('credentials.use', { id: found[1]!.id })
+    assert.equal(state.session?.accountId, ACME)
+  } finally {
+    for (const [name, value] of Object.entries(env)) value === undefined ? delete process.env[name] : (process.env[name] = value)
+    await rm(home, { recursive: true, force: true })
+  }
 })

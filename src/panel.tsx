@@ -29,6 +29,7 @@ import {
   Stack,
   Table,
   Text,
+  Textarea,
   type Atom,
   type OrcaNode,
   type PanelContext,
@@ -39,6 +40,7 @@ import {
 import type {
   Account,
   AccountSettings,
+  FoundCredential,
   AuthState,
   CertificateStatus,
   DueFilter,
@@ -64,6 +66,8 @@ const form = atom({ space: '', apiKey: '' })
 const accountsState = atom<{ accounts: Account[]; orcaProject: Option | null }>({ accounts: [], orcaProject: null })
 const settings = atom<AccountSettings | null>(null)
 const connection = atom<CertificateStatus | null>(null)
+/** backlog-mcp-server entries found in configs on this machine; null while scanning. */
+const found = atom<FoundCredential[] | null>(null)
 /** The CA file path while it is typed; saved on Enter or Apply. */
 const caFileDraft = atom<string | null>(null)
 const connectionTest = atom<{ tone: Tone; text: string } | null>(null)
@@ -141,6 +145,8 @@ const launching = atom(false)
 /** Which collapsible sections are closed; kept across screens and restarts. */
 const closedSections = atom<string[]>('closedSections', [], { persist: 'plugin' })
 const NO_SKILL = 'none'
+/** The first message for the agent, for one issue, agent and skill; `edited` keeps it on changes. */
+const promptDraft = atom<{ basis: string; text: string; edited: boolean } | null>(null)
 
 // --- Helpers -------------------------------------------------------------------------------------
 
@@ -349,6 +355,7 @@ function applyAuth(next: AuthState): void {
   set(session, next.session)
   set(accountsState, { accounts: next.accounts, orcaProject: next.orcaProject })
   set(authError, next.error ?? null)
+  if (!next.session) void loadFound()
   if (!next.session || next.session.accountId === before) return
   if (before) {
     // Project, status and user ids belong to the old space.
@@ -380,6 +387,23 @@ async function login(): Promise<void> {
   }
 }
 
+async function loadFound(): Promise<void> {
+  set(found, null)
+  try {
+    set(found, await plugin.request('credentials.found'))
+  } catch (error) {
+    set(found, [])
+    set(authError, message(error))
+  }
+}
+
+async function useFound(id: string): Promise<void> {
+  const ok = await runAuth(() => plugin.request('credentials.use', { id }))
+  // Either way the list changes: the entry is now saved, or it carries the failure.
+  void loadFound()
+  if (ok && read(screen) === 'settings') void loadSettings()
+}
+
 /** Switching here also remembers the account for the Orca project in focus. */
 const useAccount = (id: string) => runAuth(() => plugin.request('account.use', { id }))
 
@@ -390,6 +414,7 @@ async function removeAccount(id: string): Promise<void> {
 
 async function loadSettings(): Promise<void> {
   void loadConnection()
+  void loadFound()
   try {
     set(settings, await plugin.request('settings.get'))
   } catch (error) {
@@ -441,7 +466,28 @@ async function openIssue(key: string): Promise<void> {
   } catch (error) {
     if (read(openKey) === key) set(detail, { issue: null, error: message(error) })
   }
-  if (!read(launchOptions)) void loadLaunchOptions()
+  if (!read(launchOptions)) await loadLaunchOptions()
+  if (read(openKey) === key) void refreshPrompt(key, true)
+}
+
+/** Fills the prompt for the current choice; a prompt the person edited stays unless `reset`. */
+async function refreshPrompt(key: string, reset = false): Promise<void> {
+  const { agent, skill } = read(choice)
+  const basis = `${key}|${agent}|${skill}`
+  const draft = read(promptDraft)
+  if (!agent || (!reset && draft?.edited && draft.basis.startsWith(`${key}|`))) return
+  set(promptDraft, { basis, text: '', edited: false })
+  try {
+    const { prompt } = await plugin.request('launch.prompt', { key, agent, ...(skill ? { skill } : {}) })
+    if (read(promptDraft)?.basis === basis) set(promptDraft, { basis, text: prompt, edited: false })
+  } catch (error) {
+    set(notice, { tone: 'danger', text: `Cannot write the prompt: ${message(error)}` })
+  }
+}
+
+function chooseLaunch(key: string, part: { agent?: string; skill?: string }): void {
+  patch(choice, part)
+  void refreshPrompt(key)
 }
 
 /** From a table: a fresh trail. */
@@ -493,10 +539,15 @@ async function openAttachment(key: string, attachmentId: number): Promise<void> 
 
 async function startAgent(key: string): Promise<void> {
   const { target, agent, skill } = read(choice)
+  const prompt = read(promptDraft)?.text.trim()
   set(launching, true)
   set(notice, null)
   try {
-    await plugin.request('launch.start', { key, target, agent, ...(skill ? { skill } : {}) }, { timeoutMs: 120_000 })
+    await plugin.request(
+      'launch.start',
+      { key, target, agent, ...(skill ? { skill } : {}), ...(prompt ? { prompt } : {}) },
+      { timeoutMs: 120_000 }
+    )
     const label = read(launchOptions)?.agents.find((a) => a.value === agent)?.label ?? agent
     set(notice, { tone: 'success', text: `${label} started on ${key}${skill ? ` with ${skill}` : ''}.` })
   } catch (error) {
@@ -682,10 +733,47 @@ function Header({ title, back, me }: { title: string; back?: () => void; me: Ses
 
 // --- Screens -------------------------------------------------------------------------------------
 
+/** Credentials already on this machine, one press away from an account. */
+function FoundCredentials() {
+  const list = read(found)
+  return (
+    <Stack gap="xs">
+      <Row justify="between" align="center">
+        <Text weight="medium" size="sm">
+          Found on this computer
+        </Text>
+        <IconButton icon="refresh" label="Scan again" variant="ghost" size="sm" disabled={!list} onPress={loadFound} />
+      </Row>
+      {!list ? (
+        <Spinner label="Looking for backlog-mcp-server configs" />
+      ) : list.length ? (
+        <List label="Found credentials">
+          {list.map((c) => (
+            <ListItem
+              key={c.id}
+              icon={c.error ? 'warning' : 'link'}
+              title={c.saved ? `${c.space} · saved` : c.space}
+              description={`${c.file} · key ${c.keyHint}${c.error ? ` · ${c.error}` : ''}`}
+              onPress={() => useFound(c.id)}
+            />
+          ))}
+        </List>
+      ) : (
+        <Text muted size="xs">
+          No BACKLOG_DOMAIN / BACKLOG_API_KEY in Claude, Cursor, Windsurf, Gemini, Codex or VS Code MCP
+          configs, nor in this workspace's .mcp.json.
+        </Text>
+      )}
+    </Stack>
+  )
+}
+
 function AccountForm() {
   const f = read(form)
   return (
     <Stack gap="sm">
+      <FoundCredentials />
+      <Separator />
       <Input label="Space" placeholder="your-space.backlog.com" value={f.space} onChange={(space) => patch(form, { space })} />
       <Input
         label="API key"
@@ -707,9 +795,6 @@ function LoginView() {
     <Card title="Connect to Backlog" description="Sign in with a personal API key (Backlog → Personal settings → API).">
       <Stack gap="sm">
         <AccountForm />
-        <Text muted size="xs">
-          Already set up backlog-mcp-server? Its MCP config entry is picked up automatically.
-        </Text>
       </Stack>
     </Card>
   )
@@ -1020,6 +1105,7 @@ function IssuesView({ me }: { me: Session }) {
 function LaunchCard({ issue }: { issue: IssueDetail }) {
   const options = read(launchOptions)
   const c = read(choice)
+  const draft = read(promptDraft)
   if (!options) return <Spinner label="Loading agents and skills" />
   const skills = options.skills.filter((s) => !s.providers.length || s.providers.includes(c.agent))
   return (
@@ -1027,14 +1113,29 @@ function LaunchCard({ issue }: { issue: IssueDetail }) {
       <Stack gap="sm">
         <FilterRow>
           <Select label="Workspace" value={c.target} options={fitOptions([], options.targets)} onChange={(target) => patch(choice, { target })} />
-          <Select label="Agent" value={c.agent} options={options.agents} onChange={(agent) => patch(choice, { agent })} />
+          <Select label="Agent" value={c.agent} options={options.agents} onChange={(agent) => chooseLaunch(issue.key, { agent })} />
           <Select
             label="Skill"
             value={c.skill || NO_SKILL}
             options={fitOptions([{ value: NO_SKILL, label: 'No skill' }], skills)}
-            onChange={(skill) => patch(choice, { skill: skill === NO_SKILL ? '' : skill })}
+            onChange={(skill) => chooseLaunch(issue.key, { skill: skill === NO_SKILL ? '' : skill })}
           />
         </FilterRow>
+        <Textarea
+          label={c.skill ? 'Sent to the agent' : 'Prompt'}
+          rows={c.skill ? 2 : 8}
+          placeholder={draft && !draft.text && !draft.edited ? 'Writing the prompt…' : 'What the agent should do'}
+          value={draft?.text ?? ''}
+          onChange={(text) => set(promptDraft, { basis: draft?.basis ?? issue.key, text, edited: true })}
+          onSubmit={() => void startAgent(issue.key)}
+        />
+        {draft?.edited ? (
+          <Row>
+            <Button variant="ghost" size="sm" icon="refresh" onPress={() => refreshPrompt(issue.key, true)}>
+              Reset prompt
+            </Button>
+          </Row>
+        ) : null}
         <Button tone="accent" icon="agent" disabled={!c.target || !c.agent || read(launching)} onPress={() => startAgent(issue.key)}>
           {read(launching) ? 'Starting…' : 'Start agent'}
         </Button>
