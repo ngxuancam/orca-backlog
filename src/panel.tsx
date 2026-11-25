@@ -40,13 +40,17 @@ import {
 import type {
   Account,
   AccountSettings,
+  AuditEntry,
   FoundCredential,
   AuthState,
   CertificateStatus,
   DueFilter,
+  IssueChanges,
   IssueDetail,
+  IssueFields,
   IssueFilter,
   IssueRow,
+  IssueRun,
   LaunchOptions,
   Meta,
   Option,
@@ -66,6 +70,10 @@ const form = atom({ space: '', apiKey: '' })
 const accountsState = atom<{ accounts: Account[]; orcaProject: Option | null }>({ accounts: [], orcaProject: null })
 const settings = atom<AccountSettings | null>(null)
 const connection = atom<CertificateStatus | null>(null)
+/** Settings → Audit log; null while it loads. */
+const auditEntries = atom<AuditEntry[] | null>(null)
+/** Clear asks once more before it empties the log. */
+const confirmClear = atom(false)
 /** backlog-mcp-server entries found in configs on this machine; null while scanning. */
 const found = atom<FoundCredential[] | null>(null)
 /** The CA file path while it is typed; saved on Enter or Apply. */
@@ -145,6 +153,14 @@ const launching = atom(false)
 /** Which collapsible sections are closed; kept across screens and restarts. */
 const closedSections = atom<string[]>('closedSections', [], { persist: 'plugin' })
 const NO_SKILL = 'none'
+/** The open issue's edit form: fields as typed and a comment. */
+const editing = atom<{ key: string; fields: IssueFields; comment: string } | null>(null)
+/** Statuses, members, types… of the open issue's project, for the edit form. */
+const editMeta = atom<{ projectId: number; meta: Meta } | null>(null)
+const saving = atom(false)
+const saveError = atom<string | null>(null)
+/** Workspaces agents were started in for the open issue. */
+const issueRuns = atom<{ key: string; runs: IssueRun[] } | null>(null)
 /** The first message for the agent, for one issue, agent and skill; `edited` keeps it on changes. */
 const promptDraft = atom<{ basis: string; text: string; edited: boolean } | null>(null)
 
@@ -412,8 +428,25 @@ async function removeAccount(id: string): Promise<void> {
   void loadSettings()
 }
 
+async function loadAudit(): Promise<void> {
+  set(confirmClear, false)
+  try {
+    set(auditEntries, await plugin.request('audit.list'))
+  } catch (error) {
+    set(auditEntries, [])
+    set(authError, message(error))
+  }
+}
+
+async function clearAudit(): Promise<void> {
+  if (!read(confirmClear)) return set(confirmClear, true)
+  set(confirmClear, false)
+  set(auditEntries, await plugin.request('audit.clear'))
+}
+
 async function loadSettings(): Promise<void> {
   void loadConnection()
+  void loadAudit()
   void loadFound()
   try {
     set(settings, await plugin.request('settings.get'))
@@ -462,12 +495,82 @@ async function openIssue(key: string): Promise<void> {
   set(notice, null)
   try {
     const issue = await plugin.request('issue.get', { key }, { timeoutMs: 120_000 })
-    if (read(openKey) === key) set(detail, { issue, error: null })
+    if (read(openKey) === key) {
+      set(detail, { issue, error: null })
+      startEditing(issue)
+    }
   } catch (error) {
     if (read(openKey) === key) set(detail, { issue: null, error: message(error) })
   }
+  void loadRuns(key)
   if (!read(launchOptions)) await loadLaunchOptions()
   if (read(openKey) === key) void refreshPrompt(key, true)
+}
+
+function startEditing(issue: IssueDetail): void {
+  set(editing, { key: issue.key, fields: issue.fields, comment: '' })
+  set(saveError, null)
+  if (read(editMeta)?.projectId !== issue.projectId) void loadEditMeta(issue.projectId)
+}
+
+async function loadEditMeta(projectId: number): Promise<void> {
+  set(editMeta, null)
+  try {
+    set(editMeta, { projectId, meta: await plugin.request('meta.get', { projectId: String(projectId) }) })
+  } catch (error) {
+    set(saveError, `Cannot load the project's statuses and members: ${message(error)}`)
+  }
+}
+
+const sameValue = (a: string | string[], b: string | string[]) => JSON.stringify(a) === JSON.stringify(b)
+
+/** What the form changed, field by field, with the comment when there is one. */
+export function changesOf(from: IssueFields, form: { fields: IssueFields; comment: string }): IssueChanges {
+  const changes: Record<string, string | string[]> = {}
+  for (const [name, value] of Object.entries(form.fields) as [keyof IssueFields, string | string[]][]) {
+    if (!sameValue(value, from[name])) changes[name] = value
+  }
+  return { ...changes, ...(form.comment.trim() ? { comment: form.comment } : {}) }
+}
+
+async function saveIssue(issue: IssueDetail): Promise<void> {
+  const form = read(editing)
+  if (!form || form.key !== issue.key || read(saving)) return
+  const changes = changesOf(issue.fields, form)
+  if (!Object.keys(changes).length) return
+  set(saving, true)
+  set(saveError, null)
+  try {
+    const next = await plugin.request('issue.update', { key: issue.key, changes }, { timeoutMs: 120_000 })
+    if (read(openKey) !== issue.key) return
+    set(detail, { issue: next, error: null })
+    startEditing(next)
+    const fields = Object.keys(changes).filter((c) => c !== 'comment').length
+    const parts = [fields ? `Saved ${fields} field${fields > 1 ? 's' : ''}` : null, changes.comment ? 'comment added' : null]
+    set(notice, { tone: 'success', text: `${parts.filter(Boolean).join(', ')}.` })
+    refresh()
+  } catch (error) {
+    set(saveError, message(error))
+  } finally {
+    set(saving, false)
+  }
+}
+
+async function loadRuns(key: string): Promise<void> {
+  try {
+    const runs = await plugin.request('runs.get', { key })
+    if (read(openKey) === key) set(issueRuns, { key, runs })
+  } catch (error) {
+    set(notice, { tone: 'danger', text: `Cannot list the issue's worktrees: ${message(error)}` })
+  }
+}
+
+async function focusRun(workspaceId: string): Promise<void> {
+  try {
+    await plugin.request('runs.focus', { workspaceId })
+  } catch (error) {
+    set(notice, { tone: 'danger', text: message(error) })
+  }
 }
 
 /** Fills the prompt for the current choice; a prompt the person edited stays unless `reset`. */
@@ -548,6 +651,7 @@ async function startAgent(key: string): Promise<void> {
       { key, target, agent, ...(skill ? { skill } : {}), ...(prompt ? { prompt } : {}) },
       { timeoutMs: 120_000 }
     )
+    void loadRuns(key)
     const label = read(launchOptions)?.agents.find((a) => a.value === agent)?.label ?? agent
     set(notice, { tone: 'success', text: `${label} started on ${key}${skill ? ` with ${skill}` : ''}.` })
   } catch (error) {
@@ -842,6 +946,9 @@ function SettingsView() {
       <Section title="Connection" id="settings.connection">
         <ConnectionSettings />
       </Section>
+      <Section title="Audit log" id="settings.audit">
+        <AuditLog />
+      </Section>
       <Section title="Account per Orca project" id="settings.projects">
         <Stack gap="sm">
           <Text muted size="xs">
@@ -862,6 +969,54 @@ function SettingsView() {
           )}
         </Stack>
       </Section>
+    </Stack>
+  )
+}
+
+const AUDIT_COLUMNS: TableColumn[] = [
+  { key: 'at', label: 'When', width: 'sm' },
+  { key: 'action', label: 'Action', minWidth: 'md' },
+  { key: 'target', label: 'Target', width: 'sm', hideBelow: 'sm' },
+  { key: 'api', label: 'API', minWidth: 'md', hideBelow: 'md' },
+  { key: 'details', label: 'Details', minWidth: 'md', hideBelow: 'md' },
+  { key: 'result', label: 'Result', width: 'sm' }
+]
+
+/** Every change the plugin made, to trace who changed what through which API. */
+function AuditLog() {
+  const entries = read(auditEntries)
+  const failed = entries?.filter((e) => !e.ok).length ?? 0
+  return (
+    <Stack gap="sm">
+      <Row justify="between" align="center" wrap>
+        <Text muted size="xs">
+          {entries ? `${entries.length} change${entries.length === 1 ? '' : 's'}${failed ? `, ${failed} failed` : ''}; the newest 500 are kept on this computer.` : ' '}
+        </Text>
+        <Row gap="xs">
+          <IconButton icon="refresh" label="Reload audit log" variant="ghost" size="sm" onPress={loadAudit} />
+          <Button size="sm" variant="ghost" tone={read(confirmClear) ? 'danger' : 'neutral'} disabled={!entries?.length} onPress={clearAudit}>
+            {read(confirmClear) ? 'Press again to clear' : 'Clear'}
+          </Button>
+        </Row>
+      </Row>
+      <Table
+        label="Audit log"
+        columns={AUDIT_COLUMNS}
+        loading={!entries}
+        emptyText="Nothing changed yet."
+        maxHeight="md"
+        rows={(entries ?? []).map((e) => ({
+          key: e.id,
+          cells: {
+            at: { type: 'relative', at: e.at },
+            action: e.space ? `${e.action} (${e.space})` : e.action,
+            target: e.target ?? '',
+            api: e.api,
+            details: e.details ?? '',
+            result: e.ok ? 'OK' : `Failed: ${e.error ?? ''}`
+          }
+        }))}
+      />
     </Stack>
   )
 }
@@ -1249,6 +1404,36 @@ function PullRequests({ issue }: { issue: IssueDetail }) {
   )
 }
 
+/** Where agents were started for this issue on this computer; press one to show it. */
+function Worktrees({ issue }: { issue: IssueDetail }) {
+  const r = read(issueRuns)
+  const runs = r?.key === issue.key ? r.runs : []
+  const agents = read(launchOptions)?.agents ?? []
+  if (!runs.length) return null
+  return (
+    <Section title={`Worktrees (${runs.length})`} id="worktrees">
+      <List label="Worktrees">
+        {runs.map((run) => (
+          <ListItem
+            key={run.workspaceId}
+            icon="branch"
+            title={run.label}
+            description={[
+              agents.find((a) => a.value === run.agent)?.label ?? run.agent,
+              run.skill,
+              run.branch,
+              `started ${new Date(run.startedAt).toLocaleString()}`
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+            onPress={() => focusRun(run.workspaceId)}
+          />
+        ))}
+      </List>
+    </Section>
+  )
+}
+
 function IssueBody({ issue }: { issue: IssueDetail }) {
   return (
     <Stack gap="sm">
@@ -1271,6 +1456,7 @@ function IssueBody({ issue }: { issue: IssueDetail }) {
       <LinkedIssues issue={issue} />
       <PullRequests issue={issue} />
       <Notice />
+      <Worktrees issue={issue} />
       <LaunchCard issue={issue} />
       <Section title="Description" id="description">
         {issue.description ? <RichText content={issue.description} issueKey={issue.key} /> : <Text muted>No description.</Text>}
@@ -1305,7 +1491,114 @@ function IssueBody({ issue }: { issue: IssueDetail }) {
           ))}
         </Stack>
       </Section>
+      <UpdateIssue issue={issue} />
     </Stack>
+  )
+}
+const NONE = 'none'
+const SEVERAL = 'several'
+const DATE = /^\d{4}-\d{2}-\d{2}$/
+const badDate = (d: string) => Boolean(d) && !DATE.test(d)
+const badHours = (h: string) => Boolean(h.trim()) && !(Number(h) >= 0)
+
+/** A Backlog list field (categories, milestones, versions) as one choice; several stay as they are. */
+function OneOf(props: { label: string; ids: string[]; options: Option[]; onChange: (ids: string[]) => void }) {
+  const { label, ids, options, onChange } = props
+  const several = ids.length > 1
+  const first = several
+    ? { value: SEVERAL, label: `${ids.length} chosen (edit in Backlog)` }
+    : { value: NONE, label: 'None' }
+  return (
+    <Select
+      label={label}
+      value={several ? SEVERAL : (ids[0] ?? NONE)}
+      disabled={several}
+      options={fitOptions([first], options)}
+      onChange={(v) => onChange(v === NONE ? [] : [v])}
+    />
+  )
+}
+
+/** An optional single choice, `''` for none. */
+function Optional(props: { label: string; none: string; value: string; options: Option[]; onChange: (value: string) => void }) {
+  const { label, none, value, options, onChange } = props
+  return (
+    <Select
+      label={label}
+      value={value || NONE}
+      options={fitOptions([{ value: NONE, label: none }], options)}
+      onChange={(v) => onChange(v === NONE ? '' : v)}
+    />
+  )
+}
+
+/** Comment on the issue and change its fields; one save sends both, as Backlog records them. */
+function UpdateIssue({ issue }: { issue: IssueDetail }) {
+  const form = read(editing)
+  const m = read(editMeta)
+  if (!form || form.key !== issue.key) return null
+  const meta = m?.projectId === issue.projectId ? m.meta : null
+  const f = form.fields
+  const change = (part: Partial<IssueFields>) => set(editing, { ...form, fields: { ...f, ...part } })
+  const changes = changesOf(issue.fields, form)
+  const dirty = Object.keys(changes).length > 0
+  const fieldCount = Object.keys(changes).filter((c) => c !== 'comment').length
+  const busy = read(saving)
+  const label = busy
+    ? 'Saving…'
+    : fieldCount
+      ? `Save ${fieldCount} change${fieldCount > 1 ? 's' : ''}${changes.comment ? ' and comment' : ''}`
+      : 'Comment'
+  return (
+    <Section title="Update issue" id="update">
+      <Stack gap="sm">
+        <Textarea
+          label="Comment"
+          rows={4}
+          placeholder="Add a comment (Backlog formatting)"
+          value={form.comment}
+          onChange={(comment) => set(editing, { ...form, comment })}
+          onSubmit={() => void saveIssue(issue)}
+        />
+        {!meta ? (
+          <Spinner label="Loading statuses and members" />
+        ) : (
+          <Stack gap="sm">
+            <FilterRow>
+              <Select label="Status" value={f.statusId} options={fitOptions([], meta.statuses)} onChange={(statusId) => change({ statusId })} />
+              <Optional label="Resolution" none="None" value={f.resolutionId} options={meta.resolutions} onChange={(resolutionId) => change({ resolutionId })} />
+              <Optional label="Assignee" none="Unassigned" value={f.assigneeId} options={meta.users} onChange={(assigneeId) => change({ assigneeId })} />
+            </FilterRow>
+            <FilterRow>
+              <Select label="Priority" value={f.priorityId} options={fitOptions([], meta.priorities)} onChange={(priorityId) => change({ priorityId })} />
+              <Select label="Issue type" value={f.issueTypeId} options={fitOptions([], meta.issueTypes)} onChange={(issueTypeId) => change({ issueTypeId })} />
+              <OneOf label="Category" ids={f.categoryIds} options={meta.categories} onChange={(categoryIds) => change({ categoryIds })} />
+            </FilterRow>
+            <FilterRow>
+              <OneOf label="Milestone" ids={f.milestoneIds} options={meta.versions} onChange={(milestoneIds) => change({ milestoneIds })} />
+              <OneOf label="Version" ids={f.versionIds} options={meta.versions} onChange={(versionIds) => change({ versionIds })} />
+            </FilterRow>
+            <FilterRow>
+              <Input label="Start date" placeholder="yyyy-MM-dd" value={f.startDate} invalid={badDate(f.startDate)} onChange={(startDate) => change({ startDate })} />
+              <Input label="Due date" placeholder="yyyy-MM-dd" value={f.dueDate} invalid={badDate(f.dueDate)} onChange={(dueDate) => change({ dueDate })} />
+              <Input label="Estimated hours" value={f.estimatedHours} invalid={badHours(f.estimatedHours)} onChange={(estimatedHours) => change({ estimatedHours })} />
+              <Input label="Actual hours" value={f.actualHours} invalid={badHours(f.actualHours)} onChange={(actualHours) => change({ actualHours })} />
+            </FilterRow>
+            <Input label="Summary" value={f.summary} invalid={!f.summary.trim()} onChange={(summary) => change({ summary })} />
+            <Textarea label="Description" rows={8} value={f.description} onChange={(description) => change({ description })} />
+          </Stack>
+        )}
+        <ErrorCallout title="Cannot save" text={read(saveError)} />
+        <Row gap="xs" wrap>
+          <Button tone="accent" icon="check" disabled={busy || !dirty} onPress={() => saveIssue(issue)}>
+            {label}
+          </Button>
+          <Button variant="ghost" disabled={busy || !dirty} onPress={() => startEditing(issue)}>
+            Discard
+          </Button>
+        </Row>
+      </Stack>
+    </Section>
   )
 }
 

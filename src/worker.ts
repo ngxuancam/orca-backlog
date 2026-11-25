@@ -7,8 +7,9 @@ import { isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { accountId, accountStore } from './accounts'
+import { auditLog, excerpt, type AuditInput } from './audit'
 import { applyCertificates, DEFAULT_CERTIFICATES } from './certificates'
-import { api, discoverCredentials, normalizeSpace, request, type Credentials, type Query } from './backlog'
+import { api, discoverCredentials, normalizeSpace, request, send, type Credentials, type Query } from './backlog'
 import {
   attachmentKind,
   downloadsFolder,
@@ -20,7 +21,7 @@ import {
   selfIgnoringFolder
 } from './files'
 import { backlogMarkdown } from './inline'
-import { installedAgents, installedSkills } from './orcaCli'
+import { cliLauncher, installedAgents, installedSkills, MAX_CLI_PROMPT, type LaunchTarget } from './orcaCli'
 import type {
   Account,
   AccountSettings,
@@ -28,9 +29,12 @@ import type {
   CertificateSettings,
   DueFilter,
   FoundCredential,
+  IssueChanges,
   IssueDetail,
+  IssueFields,
   IssueFilter,
   IssueRow,
+  IssueRun,
   LinkedIssue,
   PullRequest,
   Meta,
@@ -75,7 +79,11 @@ type Issue = {
   created: string
   updated: string
   milestone: Named[]
+  versions?: Named[]
   category: Named[]
+  resolution?: Named | null
+  estimatedHours?: number | null
+  actualHours?: number | null
   attachments: (Named & { size: number })[]
   parentIssueId: number | null
 }
@@ -118,6 +126,15 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   const accounts = accountStore(orca)
+  const audit = auditLog(orca)
+  /** The space a change is made in, for the audit log. */
+  const inSpace = (input: AuditInput): AuditInput => (current ? { space: current.session.space, ...input } : input)
+
+  orca.panels.handle('audit.list', () => audit.list())
+  orca.panels.handle('audit.clear', async () => {
+    await audit.clear((await audit.list()).length)
+    return audit.list()
+  })
 
   // --- Connection: which CA certificates HTTPS trusts ------------------------------------------
   const CERTIFICATES = 'certificates'
@@ -131,7 +148,14 @@ export default function activate(orca: OrcaWorkerApi): void {
   orca.panels.handle('connection.get', () => certificates)
   orca.panels.handle('connection.set', async ({ system, caFile }) => {
     const settings = { system, caFile: caFile.trim() }
-    await orca.storage.set(CERTIFICATES, settings)
+    await audit.track(
+      {
+        action: 'Changed connection settings',
+        api: 'plugin storage (certificates)',
+        details: `system certificates ${system ? 'on' : 'off'}; CA file ${settings.caFile || 'none'}`
+      },
+      () => orca.storage.set(CERTIFICATES, settings)
+    )
     certificates = applyCertificates(settings)
     return certificates
   })
@@ -384,7 +408,12 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
   orca.panels.handle('auth.status', () => state())
 
   orca.panels.handle('auth.login', async ({ space, apiKey }) => {
-    const account = await addAccount({ space: normalizeSpace(space), apiKey: apiKey.trim() })
+    const target = normalizeSpace(space)
+    const account = await audit.track(
+      { action: 'Added account', api: 'GET /api/v2/users/myself, plugin secrets', target, space: target, details: 'typed in' },
+      () => addAccount({ space: target, apiKey: apiKey.trim() }),
+      (a) => ({ details: `typed in; ${a.name}` })
+    )
     await accounts.use(account.id, (await focusedOrcaProject())?.value ?? null)
     return changed()
   })
@@ -406,18 +435,31 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
   })
 
   orca.panels.handle('credentials.use', async ({ id }) => {
-    const account = await tryFound(id)
+    const found = foundCreds.get(id)
+    const account = await audit.track(
+      {
+        action: 'Added account',
+        api: 'GET /api/v2/users/myself, plugin secrets',
+        ...(found ? { target: found.creds.space, space: found.creds.space, details: `from ${found.file}` } : {})
+      },
+      () => tryFound(id),
+      (a) => ({ details: `from ${found?.file ?? 'an MCP config'}; ${a.name}` })
+    )
     await accounts.use(account.id, (await focusedOrcaProject())?.value ?? null)
     return changed()
   })
 
   orca.panels.handle('account.use', async ({ id }) => {
-    await accounts.use(id, (await focusedOrcaProject())?.value ?? null)
+    const project = await focusedOrcaProject()
+    await audit.track(
+      { action: 'Switched account', api: 'plugin storage (accounts)', target: id, ...(project ? { details: `for Orca project ${project.label}` } : {}) },
+      () => accounts.use(id, project?.value ?? null)
+    )
     return changed()
   })
 
   orca.panels.handle('account.remove', async ({ id }) => {
-    await accounts.remove(id)
+    await audit.track({ action: 'Removed account', api: 'plugin storage and secrets (accounts)', target: id }, () => accounts.remove(id))
     if (current?.session.accountId === id) current = null
     return changed()
   })
@@ -425,7 +467,10 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
   orca.panels.handle('settings.get', accountSettings)
 
   orca.panels.handle('settings.map', async ({ projectId, accountId: id }) => {
-    await accounts.map(projectId, id)
+    await audit.track(
+      { action: 'Set the account of an Orca project', api: 'plugin storage (projectAccounts)', target: projectId, details: id || 'last used account' },
+      () => accounts.map(projectId, id)
+    )
     await changed()
     return accountSettings()
   })
@@ -490,7 +535,30 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
     return { issues: issues.map(toRow), total: count.count }
   })
 
-  orca.panels.handle('issue.get', async ({ key }): Promise<IssueDetail> => {
+  orca.panels.handle('issue.get', ({ key }) => detailOf(key))
+
+  orca.panels.handle('issue.update', async ({ key, changes }) => {
+    const path = `/issues/${encodeURIComponent(key)}`
+    const form = changeForm(changes)
+    const comment = changes.comment?.trim()
+    const fields = Object.keys(form).length
+    if (!fields && !comment) throw new Error('Nothing to save')
+    const write = fields
+      ? { method: 'PATCH' as const, form: comment ? { ...form, comment } : form, path }
+      : { method: 'POST' as const, form: { content: comment! }, path: `${path}/comments` }
+    await audit.track(
+      inSpace({
+        action: fields ? 'Updated issue' : 'Commented on issue',
+        api: `${write.method} /api/v2${write.path}`,
+        target: key,
+        details: describeChanges(changes)
+      }),
+      async () => send(await creds(), write, write.path)
+    )
+    return detailOf(key)
+  })
+
+  async function detailOf(key: string): Promise<IssueDetail> {
     const [i, comments] = await Promise.all([
       issue(key),
       get<Comment[]>(`/issues/${encodeURIComponent(key)}/comments`, { order: 'desc', count: 20 })
@@ -516,9 +584,10 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
         created: Date.parse(c.created)
       })),
       ...links,
-      pullRequests
+      pullRequests,
+      fields: fieldsOf(i)
     }
-  })
+  }
 
   // --- Attachments ----------------------------------------------------------------------------
 
@@ -550,6 +619,16 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
     if (!file) throw new Error(`${key} has no attachment ${attachmentId}`)
     const name = safeName(file.name, `attachment-${file.id}`)
     const download = () => downloadAttachment(i.issueKey, file.id)
+    const saved = (path: string) =>
+      audit.track(
+        inSpace({
+          action: 'Saved attachment',
+          api: `GET /api/v2/issues/${i.issueKey}/attachments/${file.id} → file`,
+          target: i.issueKey,
+          details: path
+        }),
+        () => saveOnce(path, download, file.size)
+      )
 
     if (attachmentKind(name) !== 'file') {
       const ws = await focusedLocalWorkspace()
@@ -557,7 +636,7 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
         const { dir, writeGitignore } = previewFolder(ws.path)
         if (writeGitignore) await selfIgnoringFolder(dir)
         const path = join(dir, safeName(i.issueKey), name)
-        await saveOnce(path, download, file.size)
+        await saved(path)
         await rememberPreviewFolder(dir)
         await orca.host.call('editor.open', { workspaceId: ws.id, path: relative(ws.path, path).replace(/\\/g, '/') })
         return { path, mode: 'preview' as const }
@@ -566,7 +645,7 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
 
     const project = (await projects()).find((p) => p.id === i.projectId)
     const path = join(downloadsFolder(project?.name ?? String(i.projectId)), name)
-    await saveOnce(path, download, file.size)
+    await saved(path)
     if (attachmentKind(name) === 'file') {
       revealInFolder(path)
       return { path, mode: 'folder' as const }
@@ -607,27 +686,188 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
 
   orca.panels.handle('launch.prompt', async ({ key, agent, skill }) => ({ prompt: await launchPrompt(key, agent, skill) }))
 
-  orca.panels.handle('launch.start', async ({ key, target, agent, skill, prompt: given }) => {
+  // --- Where each issue's agents run, on this computer --------------------------------------
+  type Run = Omit<IssueRun, 'label' | 'branch'>
+  const RUNS = 'issueRuns'
+  const MAX_RUN_ISSUES = 300
+  const MAX_RUNS_PER_ISSUE = 10
+  /** Per account, then issue key: issue keys are only unique within one space. */
+  const runsKey = () => `${current?.session.space ?? ''}/`
+  const readRuns = async () => ((await orca.storage.get(RUNS)) as Record<string, Run[]> | null) ?? {}
+
+  async function rememberRun(key: string, run: Run): Promise<void> {
+    if (!run.workspaceId) return
+    const all = await readRuns()
+    const id = runsKey() + key
+    const runs = [run, ...(all[id] ?? []).filter((r) => r.workspaceId !== run.workspaceId)].slice(0, MAX_RUNS_PER_ISSUE)
+    delete all[id]
+    // Newest issues last; the oldest go first once there are too many.
+    const kept = Object.entries({ ...all, [id]: runs }).slice(-MAX_RUN_ISSUES)
+    await orca.storage.set(RUNS, Object.fromEntries(kept))
+  }
+
+  orca.panels.handle('runs.get', async ({ key }): Promise<IssueRun[]> => {
+    const id = runsKey() + key
+    const runs = (await readRuns())[id] ?? []
+    if (!runs.length) return []
+    const { workspaces } = await orca.host.call('workspace.list')
+    const byId = new Map(workspaces.map((w) => [w.id, w]))
+    const live = runs.filter((r) => byId.has(r.workspaceId))
+    if (live.length !== runs.length) {
+      const all = await readRuns()
+      if (live.length) all[id] = live
+      else delete all[id]
+      await orca.storage.set(RUNS, all)
+    }
+    return live.map((r) => {
+      const w = byId.get(r.workspaceId)!
+      return { ...r, label: `${w.project ?? 'Folder'} / ${w.name}`, branch: w.branch ?? null }
+    })
+  })
+
+  orca.panels.handle('runs.focus', async ({ workspaceId }) => {
+    await orca.host.call('workspace.open', { workspaceId })
+    return { opened: true }
+  })
+
+  /** A new worktree's id when the launch did not say it: the newest one named after the issue. */
+  async function workspaceNamed(name: string): Promise<string> {
+    const { workspaces } = await orca.host.call('workspace.list')
+    return workspaces.filter((w) => w.name === name).at(-1)?.id ?? ''
+  }
+
+  orca.panels.handle('launch.start', async (input) => {
+    const started = await audit.track(
+      inSpace({
+        action: 'Started agent',
+        api: 'orca agent launch',
+        target: input.key,
+        details: [input.agent, input.skill, input.target.startsWith('new:') ? 'new worktree' : input.target.slice(3)].filter(Boolean).join(' · ')
+      }),
+      () => startAgent(input),
+      (r) => ({ api: r.via, details: [input.agent, input.skill, r.workspaceId || 'new worktree', `prompt "${excerpt(r.prompt)}"`].filter(Boolean).join(' · ') })
+    )
+    const workspaceId = started.workspaceId || (input.target.startsWith('new:') ? await workspaceNamed(input.key) : '')
+    await rememberRun(input.key, {
+      workspaceId,
+      agent: input.agent,
+      ...(input.skill ? { skill: input.skill } : {}),
+      startedAt: Date.now()
+    }).catch((e) => orca.log(`cannot remember the run: ${(e as Error).message}`))
+    return { workspaceId }
+  })
+
+  async function startAgent({ key, target, agent, skill, prompt: given }: LaunchInput): Promise<{ workspaceId: string; via: string; prompt: string }> {
     const prompt = given?.trim() || (await launchPrompt(key, agent, skill))
-    if (target.startsWith('ws:')) {
-      const workspaceId = target.slice(3)
+    const [projectId, hostId] = target.startsWith('new:') ? target.slice(4).split('|') : []
+    const where: LaunchTarget = projectId
+      ? { projectId, ...(hostId ? { hostId } : {}), name: key }
+      : { workspaceId: target.slice(3) }
+    if (prompt.length <= MAX_CLI_PROMPT) {
+      try {
+        const { workspaceId } = await cliLauncher.launchWithPrompt(where, agent, prompt)
+        return { workspaceId, via: 'workspaceId' in where ? 'orca agent launch' : 'orca worktree create', prompt }
+      } catch (error) {
+        orca.log(`orca CLI launch failed, using the host API: ${(error as Error).message}`)
+      }
+    }
+    if ('workspaceId' in where) {
+      const { workspaceId } = where
       const { terminalId } = await orca.host.call('agent.launch', { workspaceId, agent, prompt })
       await orca.host.call('workspace.open', { workspaceId })
       await focusTerminal(terminalId)
-      return { workspaceId }
+      return { workspaceId, via: 'host agent.launch', prompt }
     }
-    const [projectId, hostId] = target.slice(4).split('|')
-    const created = await orca.host.call('workspace.create', {
-      projectId: projectId!,
-      ...(hostId ? { hostId } : {}),
-      name: key,
-      agent,
-      prompt,
-      open: true
-    })
+    const created = await orca.host.call('workspace.create', { ...where, agent, prompt, open: true })
     await focusTerminal(created.terminalId)
-    return { workspaceId: created.workspaceId }
-  })
+    return { workspaceId: created.workspaceId, via: 'host workspace.create', prompt }
+  }
+}
+
+type LaunchInput = { key: string; target: string; agent: string; skill?: string; prompt?: string }
+
+const idsOf = (list: Named[] | undefined) => (list ?? []).map((x) => String(x.id))
+const hours = (h: number | null | undefined) => (h == null ? '' : String(h))
+
+export function fieldsOf(i: Issue): IssueFields {
+  return {
+    summary: i.summary,
+    description: i.description ?? '',
+    statusId: String(i.status.id),
+    resolutionId: i.resolution ? String(i.resolution.id) : '',
+    assigneeId: i.assignee ? String(i.assignee.id) : '',
+    priorityId: i.priority ? String(i.priority.id) : '',
+    issueTypeId: String(i.issueType.id),
+    categoryIds: idsOf(i.category),
+    milestoneIds: idsOf(i.milestone),
+    versionIds: idsOf(i.versions),
+    startDate: day(i.startDate) ?? '',
+    dueDate: day(i.dueDate) ?? '',
+    estimatedHours: hours(i.estimatedHours),
+    actualHours: hours(i.actualHours)
+  }
+}
+
+const FIELD_NAMES: Record<string, string> = {
+  statusId: 'status',
+  resolutionId: 'resolution',
+  assigneeId: 'assignee',
+  priorityId: 'priority',
+  issueTypeId: 'issue type',
+  categoryIds: 'category',
+  milestoneIds: 'milestone',
+  versionIds: 'version',
+  startDate: 'start date',
+  dueDate: 'due date',
+  estimatedHours: 'estimated hours',
+  actualHours: 'actual hours'
+}
+
+/** The audit log's line for a save: ids as sent, free text as an excerpt. */
+export function describeChanges(changes: IssueChanges): string {
+  const parts: string[] = []
+  for (const [field, value] of Object.entries(changes) as [keyof IssueChanges, string | string[] | undefined][]) {
+    if (value === undefined) continue
+    if (field === 'comment') continue
+    if (field === 'summary') parts.push(`summary "${excerpt(value as string)}"`)
+    else if (field === 'description') parts.push(`description (${(value as string).length} chars)`)
+    else {
+      const shown = Array.isArray(value) ? value.join(', ') : value
+      parts.push(`${FIELD_NAMES[field] ?? field} → ${shown || '(none)'}`)
+    }
+  }
+  if (changes.comment?.trim()) parts.push(`comment "${excerpt(changes.comment)}"`)
+  return parts.join('; ')
+}
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/
+const REQUIRED = new Set<keyof IssueFields>(['summary', 'statusId', 'priorityId', 'issueTypeId'])
+
+/**
+ * Changed fields → Backlog's update form. `''` clears a field (an empty list clears a list);
+ * checks what Backlog would refuse less clearly.
+ */
+export function changeForm(changes: IssueChanges): Query {
+  const form: Query = {}
+  const lists = { categoryIds: 'categoryId', milestoneIds: 'milestoneId', versionIds: 'versionId' } as const
+  const names = { statusId: 1, resolutionId: 1, assigneeId: 1, priorityId: 1, issueTypeId: 1 } as const
+  for (const [field, raw] of Object.entries(changes) as [keyof IssueChanges, string | string[] | undefined][]) {
+    if (raw === undefined || field === 'comment') continue
+    if (field in lists) {
+      form[lists[field as keyof typeof lists]] = (raw as string[]).map(Number)
+      continue
+    }
+    const value = (raw as string).trim()
+    if (REQUIRED.has(field) && !value) throw new Error(`${field} cannot be empty`)
+    if ((field === 'startDate' || field === 'dueDate') && value && !DATE.test(value)) {
+      throw new Error(`${field === 'startDate' ? 'Start' : 'Due'} date must be yyyy-MM-dd`)
+    }
+    if ((field === 'estimatedHours' || field === 'actualHours') && value && !(Number(value) >= 0)) {
+      throw new Error(`${field === 'estimatedHours' ? 'Estimated' : 'Actual'} hours must be a number`)
+    }
+    form[field] = field in names && value ? Number(value) : field === 'description' ? (raw as string) : value
+  }
+  return form
 }
 
 /** Local `yyyy-MM-dd`, `days` from today. */

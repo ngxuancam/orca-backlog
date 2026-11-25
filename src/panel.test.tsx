@@ -2,7 +2,7 @@
 import { afterEach, assert, mockHost, mount, test, type TestPanel } from 'orca/testing'
 import * as panel from './panel'
 import { toneOfColor } from './panel'
-import type { AuthState, IssueDetail, Session } from './protocol'
+import type { AuditEntry, AuthState, IssueDetail, IssueRun, Session } from './protocol'
 
 let view: TestPanel | undefined
 afterEach(() => view?.unmount())
@@ -15,6 +15,22 @@ const detail: IssueDetail = {
   ...row,
   url: 'https://acme.backlog.com/view/APP-1',
   projectId: 10,
+  fields: {
+    summary: 'Fix login',
+    description: 'It breaks',
+    statusId: '1',
+    resolutionId: '',
+    assigneeId: '7',
+    priorityId: '2',
+    issueTypeId: '1',
+    categoryIds: [],
+    milestoneIds: [],
+    versionIds: [],
+    startDate: '',
+    dueDate: '',
+    estimatedHours: '',
+    actualHours: ''
+  },
   description: 'It breaks',
   assignee: 'Me',
   createdUser: 'Boss',
@@ -45,13 +61,27 @@ const detail: IssueDetail = {
 }
 
 let started: unknown
+let focused: unknown
+let auditRows: AuditEntry[] = [
+  { id: 'a1', at: 0, action: 'Updated issue', api: 'PATCH /api/v2/issues/APP-1', target: 'APP-1', details: 'status → 3', space: 'acme.backlog.com', ok: true }
+]
+let runs: IssueRun[] = []
 let lastQuery: unknown
 function host(signedIn: boolean, extra: Record<string, (input: never) => unknown> = {}) {
   return mockHost({
     requests: {
       'auth.status': () => state(signedIn ? session : null),
       'auth.login': () => state(session),
-      'meta.get': () => ({ projects: [{ value: '10', label: 'App (APP)' }], statuses: [], priorities: [], users: [], resolutions: [], issueTypes: [], categories: [], versions: [] }),
+      'meta.get': () => ({
+        projects: [{ value: '10', label: 'App (APP)' }],
+        statuses: [{ value: '1', label: 'Open' }, { value: '2', label: 'In Progress' }],
+        priorities: [{ value: '2', label: 'High' }],
+        users: [{ value: '7', label: 'Me' }, { value: '8', label: 'Boss' }],
+        resolutions: [],
+        issueTypes: [{ value: '1', label: 'Bug' }],
+        categories: [],
+        versions: []
+      }),
       'issues.list': (q) => ((lastQuery = q), { issues: [row], total: 1 }),
       'issues.count': () => ({ count: 1 }),
       'issue.get': () => detail,
@@ -68,6 +98,10 @@ function host(signedIn: boolean, extra: Record<string, (input: never) => unknown
       'launch.start': (input) => ((started = input), { workspaceId: 'w1' }),
       'attachment.open': () => ({ path: 'x/shot.png', mode: 'preview' }),
       'credentials.found': () => [],
+      'audit.list': () => auditRows,
+      'audit.clear': () => (auditRows = [{ ...auditRows[0]!, id: 'c', action: 'Cleared the audit log', details: '1 entries' }]),
+      'runs.get': () => runs,
+      'runs.focus': (input) => ((focused = input), { opened: true }),
       ...extra
     }
   })
@@ -125,6 +159,7 @@ test('lists my issues, opens one and starts an agent with the last skill', async
   assert.ok(view.find({ text: /#7 Fix login/ }))
   assert.ok(view.find({ text: /APP-0 Epic/ }))
   assert.equal(view.valueOf({ label: 'Prompt' }), 'Work on Backlog issue APP-1: Fix login')
+  assert.equal(view.find({ label: 'Worktrees' }), null)
   await view.select({ label: 'Skill' }, 'code-review')
   assert.equal(view.valueOf({ label: 'Sent to the agent' }), '/code-review APP-1')
   await view.press({ role: 'button', text: 'Start agent' })
@@ -136,6 +171,12 @@ test('lists my issues, opens one and starts an agent with the last skill', async
     prompt: '/code-review APP-1'
   })
   assert.deepEqual(view.persisted.plugin.launchChoice, { target: 'ws:w1', agent: 'claude', skill: 'code-review' })
+  // The launch is listed under Worktrees; pressing it shows that workspace.
+  runs = [{ workspaceId: 'w1', label: 'repo / main', branch: 'main', agent: 'claude', skill: 'code-review', startedAt: 0 }]
+  await view.press({ role: 'button', text: 'Start agent' })
+  await view.press({ text: /^repo \/ main/ })
+  assert.deepEqual(focused, { workspaceId: 'w1' })
+  runs = []
   // An edited prompt survives a change of skill, until it is reset.
   await view.type({ label: 'Sent to the agent' }, ' only the CSS')
   await view.select({ label: 'Skill' }, 'none')
@@ -144,6 +185,51 @@ test('lists my issues, opens one and starts an agent with the last skill', async
   assert.equal(view.valueOf({ label: 'Prompt' }), 'Work on Backlog issue APP-1: Fix login')
   assert.deepEqual(view.refusals, [])
   assert.deepEqual(view.errors, [])
+})
+
+test('comments and changes fields in one save; a comment alone is a comment', async () => {
+  const updates: unknown[] = []
+  view = await mount(panel, {
+    host: host(true, {
+      'issue.update': (input: { key: string; changes: { comment?: string } }) => {
+        updates.push(input)
+        const { comment: _, ...fields } = input.changes
+        return { ...detail, fields: { ...detail.fields, ...fields } }
+      }
+    })
+  })
+  await view.settled()
+  await view.activateRow({ type: 'Table' }, 'APP-1')
+  assert.equal(view.find({ role: 'button', text: 'Comment' })?.props.disabled, true)
+  await view.type({ label: 'Comment' }, 'Looking into it')
+  await view.press({ role: 'button', text: 'Comment' })
+  await view.select({ label: 'Status' }, '2')
+  await view.select({ label: 'Assignee' }, 'none')
+  await view.type({ label: 'Comment' }, 'Done on my side')
+  await view.press({ role: 'button', text: 'Save 2 changes and comment' })
+  assert.deepEqual(updates, [
+    { key: 'APP-1', changes: { comment: 'Looking into it' } },
+    { key: 'APP-1', changes: { statusId: '2', assigneeId: '', comment: 'Done on my side' } }
+  ])
+  // The form starts again from what Backlog answered.
+  assert.equal(view.valueOf({ label: 'Comment' }), '')
+  assert.equal(view.valueOf({ label: 'Status' }), '2')
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+})
+
+test('settings shows the audit log and clears it after a second press', async () => {
+  view = await mount(panel, { host: host(true, { 'settings.get': () => ({ accounts, projects: [] }) }) })
+  await view.settled()
+  await view.press({ label: 'Settings' })
+  assert.deepEqual(view.rowsOf({ label: 'Audit log' }), ['a1'])
+  assert.match(JSON.stringify(view.tree()), /PATCH \/api\/v2\/issues\/APP-1/)
+  await view.press({ role: 'button', text: 'Clear' })
+  assert.deepEqual(view.rowsOf({ label: 'Audit log' }), ['a1'])
+  await view.press({ role: 'button', text: 'Press again to clear' })
+  assert.deepEqual(view.rowsOf({ label: 'Audit log' }), ['c'])
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
 })
 
 test('settings lists accounts and maps an Orca project to one', async () => {
