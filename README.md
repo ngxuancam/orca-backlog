@@ -5,7 +5,7 @@
 **Your Nulab Backlog issues in Orca's sidebar.**<br>
 Find the ticket, read it, and hand it to an agent without leaving your workspace.
 
-[![Version](https://img.shields.io/badge/version-v0.3.3-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
+[![Version](https://img.shields.io/badge/version-v0.3.4-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
@@ -109,6 +109,9 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
   (`~/.claude.json`, Cursor, Windsurf, Claude Desktop, VS Code), so there's nothing to type.
 - Previews saved in a workspace go to `.orca-backlog/`, a folder git ignores on its own. It cleans
   itself: an issue's previews go after 7 days unopened, and the folder stays under 200 MB.
+- **Behind a company proxy or antivirus** (`SELF_SIGNED_CERT_IN_CHAIN`)? The plugin trusts your
+  system's certificate store by default. If IT hands out a root certificate as a file instead, add
+  it under *Settings → Connection*, then press *Test connection*.
 - Very long descriptions or comments are shortened in the panel; *Open in Backlog* (top right)
   shows the rest.
 

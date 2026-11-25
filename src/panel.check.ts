@@ -119,7 +119,8 @@ const requests = {
       { value: 'p2', label: 'side-hustle', accountId: 'side.backlog.jp.7' },
       { value: 'p3', label: 'dotfiles', accountId: '' }
     ]
-  })
+  }),
+  'connection.get': () => ({ system: true, caFile: '', node: 146, systemCount: 61, fileCount: 0 })
 }
 
 export default defineCheck({

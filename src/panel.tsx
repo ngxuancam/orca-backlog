@@ -40,6 +40,7 @@ import type {
   Account,
   AccountSettings,
   AuthState,
+  CertificateStatus,
   DueFilter,
   IssueDetail,
   IssueFilter,
@@ -62,6 +63,10 @@ const form = atom({ space: '', apiKey: '' })
 
 const accountsState = atom<{ accounts: Account[]; orcaProject: Option | null }>({ accounts: [], orcaProject: null })
 const settings = atom<AccountSettings | null>(null)
+const connection = atom<CertificateStatus | null>(null)
+/** The CA file path while it is typed; saved on Enter or Apply. */
+const caFileDraft = atom<string | null>(null)
+const connectionTest = atom<{ tone: Tone; text: string } | null>(null)
 
 /** Persisted, like openKey and trail: navigation survives reloads and restarts. */
 const screen = atom<'home' | 'issues' | 'settings'>('screen', 'home', { persist: 'plugin' })
@@ -384,6 +389,7 @@ async function removeAccount(id: string): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
+  void loadConnection()
   try {
     set(settings, await plugin.request('settings.get'))
   } catch (error) {
@@ -395,6 +401,28 @@ function openSettings(): void {
   set(openKey, null)
   set(screen, 'settings')
   void loadSettings()
+}
+
+async function loadConnection(): Promise<void> {
+  try {
+    set(connection, await plugin.request('connection.get'))
+  } catch (error) {
+    set(connectionTest, { tone: 'danger', text: message(error) })
+  }
+}
+
+async function setConnection(part: { system?: boolean; caFile?: string }): Promise<void> {
+  const now = read(connection)
+  if (!now) return
+  set(connectionTest, null)
+  set(connection, await plugin.request('connection.set', { system: now.system, caFile: now.caFile, ...part }))
+  set(caFileDraft, null)
+}
+
+async function testConnection(): Promise<void> {
+  set(connectionTest, { tone: 'neutral', text: 'Testing…' })
+  const { ok, message: text } = await plugin.request('connection.test')
+  set(connectionTest, { tone: ok ? 'success' : 'danger', text })
 }
 
 async function mapProject(projectId: string, accountId: string): Promise<void> {
@@ -726,6 +754,9 @@ function SettingsView() {
       <Section title="Add account" id="settings.add">
         <AccountForm />
       </Section>
+      <Section title="Connection" id="settings.connection">
+        <ConnectionSettings />
+      </Section>
       <Section title="Account per Orca project" id="settings.projects">
         <Stack gap="sm">
           <Text muted size="xs">
@@ -746,6 +777,61 @@ function SettingsView() {
           )}
         </Stack>
       </Section>
+    </Stack>
+  )
+}
+
+/** Which CA certificates HTTPS trusts: for proxies and antivirus that re-sign it. */
+function ConnectionSettings() {
+  const c = read(connection)
+  const test = read(connectionTest)
+  if (!c) return <Spinner label="Loading connection settings" />
+  const caFile = read(caFileDraft) ?? c.caFile
+  const edited = caFile.trim() !== c.caFile
+  const total = c.node + c.systemCount + c.fileCount
+  return (
+    <Stack gap="sm">
+      <Text muted size="xs">
+        Behind a company proxy or antivirus that inspects HTTPS, Backlog fails with
+        SELF_SIGNED_CERT_IN_CHAIN until its root certificate is trusted here.
+      </Text>
+      <Checkbox
+        label="Trust the system's certificates"
+        description="The certificate store of Windows, macOS or Linux, where IT usually installs it."
+        checked={c.system}
+        onChange={(system) => void setConnection({ system })}
+      />
+      <Input
+        label="Extra CA certificate file (PEM)"
+        placeholder="C:\certs\company-root.pem"
+        value={caFile}
+        onChange={(v) => set(caFileDraft, v)}
+        onSubmit={() => void setConnection({ caFile })}
+      />
+      <KeyValue
+        items={[
+          { label: 'Node', value: String(c.node) },
+          { label: 'System', value: c.system ? String(c.systemCount) : 'off' },
+          { label: 'File', value: c.caFile ? String(c.fileCount) : 'none' },
+          { label: 'Trusted', value: `${total} certificates` }
+        ]}
+      />
+      <ErrorCallout title="Certificates" text={c.error ?? null} />
+      {test ? (
+        <Callout tone={test.tone}>
+          <Text size="sm">{test.text}</Text>
+        </Callout>
+      ) : null}
+      <Row gap="xs" wrap>
+        {edited ? (
+          <Button tone="accent" icon="check" onPress={() => setConnection({ caFile })}>
+            Apply
+          </Button>
+        ) : null}
+        <Button icon="refresh" onPress={testConnection}>
+          Test connection
+        </Button>
+      </Row>
     </Stack>
   )
 }

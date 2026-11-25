@@ -5,6 +5,7 @@ import { isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { accountId, accountStore } from './accounts'
+import { applyCertificates, DEFAULT_CERTIFICATES } from './certificates'
 import { api, discoverCredentials, normalizeSpace, request, type Credentials, type Query } from './backlog'
 import {
   attachmentKind,
@@ -22,6 +23,7 @@ import type {
   Account,
   AccountSettings,
   AuthState,
+  CertificateSettings,
   DueFilter,
   IssueDetail,
   IssueFilter,
@@ -113,6 +115,31 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   const accounts = accountStore(orca)
+
+  // --- Connection: which CA certificates HTTPS trusts ------------------------------------------
+  const CERTIFICATES = 'certificates'
+  const loadCertificates = async (): Promise<CertificateSettings> => ({
+    ...DEFAULT_CERTIFICATES,
+    ...((await orca.storage.get(CERTIFICATES)) as Partial<CertificateSettings> | null)
+  })
+  let certificates = applyCertificates(loadCertificates())
+  certificates.then((s) => s.error && orca.log(s.error)).catch(() => {})
+
+  orca.panels.handle('connection.get', () => certificates)
+  orca.panels.handle('connection.set', async ({ system, caFile }) => {
+    const settings = { system, caFile: caFile.trim() }
+    await orca.storage.set(CERTIFICATES, settings)
+    certificates = applyCertificates(settings)
+    return certificates
+  })
+  orca.panels.handle('connection.test', async () => {
+    try {
+      const space = await api<{ name: string }>(await creds(), '/space')
+      return { ok: true, message: `Connected to ${space.name} (${current?.session.space})` }
+    } catch (error) {
+      return { ok: false, message: (error as Error).message }
+    }
+  })
 
   async function signIn(creds: Credentials): Promise<{ account: Account; session: Session }> {
     const me = await api<Session['me']>(creds, '/users/myself')

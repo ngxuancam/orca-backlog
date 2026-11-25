@@ -29,6 +29,22 @@ export type AccountSettings = {
   projects: (Option & { accountId: string })[]
 }
 
+/** Extra CA certificates HTTPS trusts, for company proxies and antivirus that re-sign it. */
+export type CertificateSettings = {
+  /** Trust the OS certificate store (on by default). */
+  system: boolean
+  /** A PEM file with more CA certificates; `''` for none. */
+  caFile: string
+}
+
+export type CertificateStatus = CertificateSettings & {
+  /** How many certificates each source adds. */
+  node: number
+  systemCount: number
+  fileCount: number
+  error?: string
+}
+
 export type Meta = {
   projects: Option[]
   statuses: Option[]
@@ -161,6 +177,10 @@ declare module 'orca' {
     'settings.get': { output: AccountSettings }
     /** `accountId` empty: the project follows the last used account. */
     'settings.map': { input: { projectId: string; accountId: string }; output: AccountSettings }
+    'connection.get': { output: CertificateStatus }
+    'connection.set': { input: CertificateSettings; output: CertificateStatus }
+    /** Reaches the space of the account in use; `message` is the space name or the failure. */
+    'connection.test': { output: { ok: boolean; message: string } }
     /** Projects, and the statuses and priorities to filter by (statuses of one project when given). */
     'meta.get': { input: { projectId?: string }; output: Meta }
     'issues.list': { input: IssueQuery; output: { issues: IssueRow[]; total: number } }
