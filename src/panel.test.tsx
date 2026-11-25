@@ -289,25 +289,30 @@ test('the header edits the summary and description in place, apart from the shee
   assert.deepEqual(view.refusals, [])
 })
 
-test('a link offers copy, the browser and Orca\'s browser', async () => {
+test('a left click opens a link; its ⋯ menu copies it or opens it in Orca\'s browser', async () => {
   view = await mount(panel, { host: host(true) })
   await view.settled()
   await view.activateRow({ type: 'Table' }, 'APP-1')
+  // A plain link: the browser opens it on a left click, as anywhere else.
+  assert.equal(view.find({ type: 'Link', text: 'status.example.com/incidents/42' })?.props.href, 'https://status.example.com/incidents/42')
   assert.equal(view.find({ role: 'button', text: 'Copy link' }), null)
-  await view.press({ text: /^status\.example\.com\/incidents\/42/ })
+  await view.press({ label: 'More for status.example.com/incidents/42' })
   await view.press({ role: 'button', text: 'Copy link' })
-  // The result shows inline under the links, not in a box at the top.
+  // The menu closes; the result shows inline under the links, not in a box at the top.
+  assert.equal(view.find({ role: 'button', text: 'Copy link' }), null)
   assert.ok(view.find({ type: 'Text', text: 'Copied: https://status.example.com/incidents/42' }))
   assert.equal(view.find({ type: 'Callout' }), null)
+  await view.press({ label: 'More for status.example.com/incidents/42' })
   await view.press({ role: 'button', text: 'Open in Orca' })
   assert.deepEqual(linkCalls, [
     ['copy', { url: 'https://status.example.com/incidents/42' }],
     ['orca', { url: 'https://status.example.com/incidents/42' }]
   ])
-  // A pull request's row picks its link too; a second press hides the actions.
-  await view.press({ text: /^#7 Fix login/ })
+  // A pull request has the same menu; ✕ closes it.
+  assert.equal(view.find({ type: 'Link', text: '#7 Fix login' })?.props.href, 'https://acme.backlog.com/git/APP/app/pullRequests/7')
+  await view.press({ label: 'More for #7 Fix login' })
   assert.equal(view.findAll({ role: 'button', text: 'Copy link' }).length, 1)
-  await view.press({ text: /^#7 Fix login/ })
+  await view.press({ label: 'Close the menu of #7 Fix login' })
   assert.equal(view.find({ role: 'button', text: 'Copy link' }), null)
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.refusals, [])
@@ -326,11 +331,27 @@ test('Columns picks which fields a table shows, per table, and remembers it', as
   // Backlog's order, whatever the order they were picked in.
   assert.deepEqual(view.columnsOf({ label: 'My issues' }, wide), ['key', 'summary', 'assignee', 'status', 'due', 'estimatedHours'])
   assert.deepEqual(view.persisted.plugin.shownColumns, { home: ['key', 'summary', 'assignee', 'status', 'due', 'estimatedHours'] })
-  await view.press({ role: 'button', text: 'Reset columns' })
-  assert.deepEqual(view.columnsOf({ label: 'My issues' }, wide), ['key', 'summary', 'status', 'priority', 'due'])
+  // A width lasts while the list stays open, and an issue opened from it, and Back.
+  await view.select({ label: 'Summary width' }, 'lg')
+  const width = () => (view!.find({ label: 'My issues' })?.props.columns as { key: string; width?: string }[]).find((c) => c.key === 'summary')?.width
+  assert.equal(width(), 'lg')
   await view.press({ role: 'button', text: 'Done' })
   assert.equal(view.find({ label: 'Assignee', type: 'Checkbox' }), null)
+  await view.activateRow({ label: 'My issues' }, 'APP-1')
+  await view.press({ role: 'button', text: /Back/ })
+  assert.equal(width(), 'lg')
+  // Another screen and back: the width is gone, the picked columns stay.
+  await view.press({ label: 'Settings' })
+  await view.press({ role: 'button', text: /Back/ })
+  assert.equal(width(), undefined)
+  assert.deepEqual(view.columnsOf({ label: 'My issues' }, wide), ['key', 'summary', 'assignee', 'status', 'due', 'estimatedHours'])
+  // Reset, beside Columns, puts the defaults back.
+  await view.press({ role: 'button', text: 'Reset columns' })
+  assert.deepEqual(view.columnsOf({ label: 'My issues' }, wide), ['key', 'summary', 'status', 'priority', 'due'])
+  assert.deepEqual(view.persisted.plugin.shownColumns, {})
+  assert.equal(view.find({ role: 'button', text: 'Reset columns' })?.props.disabled, true)
   assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
 })
 
 test('settings shows the audit log and clears it after a second press', async () => {
