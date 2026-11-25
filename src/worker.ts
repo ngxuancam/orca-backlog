@@ -1,6 +1,8 @@
 // The plugin's worker: every Backlog call, file and Orca action the panel asks for.
 // Orca starts it on the panel's first plugin.request; an idle worker stops, so accounts live in
 // storage and secrets (src/accounts.ts) and the active one is rebuilt on demand.
+import { createHash } from 'node:crypto'
+import { homedir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { OrcaWorkerApi } from 'orca/worker'
@@ -25,6 +27,7 @@ import type {
   AuthState,
   CertificateSettings,
   DueFilter,
+  FoundCredential,
   IssueDetail,
   IssueFilter,
   IssueRow,
@@ -166,15 +169,52 @@ export default function activate(orca: OrcaWorkerApi): void {
     return account
   }
 
+  /** Credentials found on this machine, by an id the panel can name them with; keys stay here. */
+  const foundCreds = new Map<string, { creds: Credentials; file: string; error?: string }>()
+  const credentialId = (c: Credentials) => createHash('sha256').update(`${c.space}
+${c.apiKey}`).digest('hex').slice(0, 12)
+
+  async function scanCredentials() {
+    const ws = await focusedLocalWorkspace().catch(() => null)
+    const found = await discoverCredentials(ws?.path)
+    const errors = new Map([...foundCreds].map(([id, f]) => [id, f.error]))
+    foundCreds.clear()
+    for (const f of found) {
+      const id = credentialId(f.creds)
+      foundCreds.set(id, { ...f, error: errors.get(id) })
+    }
+    return foundCreds
+  }
+
+  async function tryFound(id: string): Promise<Account> {
+    const f = foundCreds.get(id)
+    if (!f) throw new Error('That credential is gone from its config; scan again')
+    try {
+      const account = await addAccount(f.creds)
+      delete f.error
+      return account
+    } catch (e) {
+      f.error = (e as Error).message
+      throw e
+    }
+  }
+
   /** With no saved account: the 0.1 login, then a backlog-mcp-server entry in MCP configs. */
   async function importFound(): Promise<string | undefined> {
     const legacy = await accounts.legacy()
-    const found = [...(legacy ? [{ creds: legacy }] : []), ...(await discoverCredentials())]
-    let error: string | undefined
-    for (const { creds: c } of found) {
+    if (legacy) {
       try {
-        await addAccount(c)
-        if (c === legacy) await accounts.clearLegacy()
+        await addAccount(legacy)
+        await accounts.clearLegacy()
+        return undefined
+      } catch {
+        // Fall back to what the configs hold.
+      }
+    }
+    let error: string | undefined
+    for (const id of (await scanCredentials()).keys()) {
+      try {
+        await tryFound(id)
         return undefined
       } catch (e) {
         error = (e as Error).message
@@ -345,6 +385,28 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   orca.panels.handle('auth.login', async ({ space, apiKey }) => {
     const account = await addAccount({ space: normalizeSpace(space), apiKey: apiKey.trim() })
+    await accounts.use(account.id, (await focusedOrcaProject())?.value ?? null)
+    return changed()
+  })
+
+  orca.panels.handle('credentials.found', async (): Promise<FoundCredential[]> => {
+    const list = await accounts.list()
+    const saved = new Set(
+      (await Promise.all(list.map((a) => accounts.creds(a.id)))).flatMap((c) => (c ? [credentialId(c)] : []))
+    )
+    const home = homedir()
+    return [...(await scanCredentials())].map(([id, f]) => ({
+      id,
+      space: f.creds.space,
+      file: f.file.startsWith(home) ? `~${f.file.slice(home.length)}` : f.file,
+      keyHint: `…${f.creds.apiKey.slice(-4)}`,
+      saved: saved.has(id),
+      ...(f.error ? { error: f.error } : {})
+    }))
+  })
+
+  orca.panels.handle('credentials.use', async ({ id }) => {
+    const account = await tryFound(id)
     await accounts.use(account.id, (await focusedOrcaProject())?.value ?? null)
     return changed()
   })
@@ -533,24 +595,37 @@ export default function activate(orca: OrcaWorkerApi): void {
     return { targets, agents: agents.agents, defaultAgent: agents.defaultAgent, skills, focused }
   })
 
-  orca.panels.handle('launch.start', async ({ key, target, agent, skill }) => {
+  async function launchPrompt(key: string, agent: string, skill?: string): Promise<string> {
+    if (skill) return skillCommand(agent, skill, key)
     const i = await issue(key)
-    const prompt = buildPrompt(i, `https://${current!.creds.space}/view/${i.issueKey}`, skill)
+    return buildPrompt(i, `https://${current!.creds.space}/view/${i.issueKey}`)
+  }
+
+  /** Brings the agent's terminal forward, so its start is seen; Orca may decline (focus moved on). */
+  const focusTerminal = (terminalId?: string) =>
+    terminalId ? orca.host.call('terminal.focus', { terminalId }).catch((e) => orca.log(`focus: ${(e as Error).message}`)) : undefined
+
+  orca.panels.handle('launch.prompt', async ({ key, agent, skill }) => ({ prompt: await launchPrompt(key, agent, skill) }))
+
+  orca.panels.handle('launch.start', async ({ key, target, agent, skill, prompt: given }) => {
+    const prompt = given?.trim() || (await launchPrompt(key, agent, skill))
     if (target.startsWith('ws:')) {
       const workspaceId = target.slice(3)
-      await orca.host.call('agent.launch', { workspaceId, agent, prompt })
+      const { terminalId } = await orca.host.call('agent.launch', { workspaceId, agent, prompt })
       await orca.host.call('workspace.open', { workspaceId })
+      await focusTerminal(terminalId)
       return { workspaceId }
     }
     const [projectId, hostId] = target.slice(4).split('|')
     const created = await orca.host.call('workspace.create', {
       projectId: projectId!,
       ...(hostId ? { hostId } : {}),
-      name: i.issueKey,
+      name: key,
       agent,
       prompt,
       open: true
     })
+    await focusTerminal(created.terminalId)
     return { workspaceId: created.workspaceId }
   })
 }
@@ -578,10 +653,14 @@ export function dueRange(due: DueFilter): Query {
 
 const MAX_DESCRIPTION = 8000
 
-export function buildPrompt(i: Issue, url: string, skill?: string): string {
+/** How each agent's prompt runs a skill: `$skill` in Codex, `/skill` in Claude Code and the rest. */
+export function skillCommand(agent: string, skill: string, key: string): string {
+  return `${agent === 'codex' ? '$' : '/'}${skill} ${key}`
+}
+
+export function buildPrompt(i: Issue, url: string): string {
   const description = (i.description ?? '').slice(0, MAX_DESCRIPTION)
   const lines = [
-    skill ? `Use the "${skill}" skill for this task.` : null,
     `Work on Backlog issue ${i.issueKey}: ${i.summary}`,
     `URL: ${url}`,
     `Type: ${i.issueType.name} · Status: ${i.status.name} · Priority: ${i.priority?.name ?? '-'}${i.dueDate ? ` · Due: ${day(i.dueDate)}` : ''}`,

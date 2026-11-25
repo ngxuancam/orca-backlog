@@ -23,6 +23,20 @@ export type AuthState = {
   error?: string
 }
 
+/** A backlog-mcp-server entry found in a config on this machine. The key stays in the worker. */
+export type FoundCredential = {
+  id: string
+  space: string
+  /** The config file, `~` for the home folder. */
+  file: string
+  /** The key's last characters, to tell entries apart. */
+  keyHint: string
+  /** Already a saved account. */
+  saved: boolean
+  /** Why signing in with it failed, when it was tried. */
+  error?: string
+}
+
 export type AccountSettings = {
   accounts: Account[]
   /** Orca projects, each with the account it uses (`''`: the last used one). */
@@ -171,6 +185,10 @@ declare module 'orca' {
     'auth.status': { output: AuthState }
     /** Adds an account and switches to it. */
     'auth.login': { input: { space: string; apiKey: string }; output: AuthState }
+    /** Credentials found in MCP configs on this machine and in the focused workspace. */
+    'credentials.found': { output: FoundCredential[] }
+    /** Signs in with a found credential, saves it as an account and switches to it. */
+    'credentials.use': { input: { id: string }; output: AuthState }
     /** Switches account and remembers it for the focused Orca project. */
     'account.use': { input: { id: string }; output: AuthState }
     'account.remove': { input: { id: string }; output: AuthState }
@@ -192,8 +210,11 @@ declare module 'orca' {
       output: { path: string; mode: 'preview' | 'folder' | 'external' }
     }
     'launch.options': { output: LaunchOptions }
+    /** The first message for an agent: `/skill KEY` with a skill, else a brief of the issue. */
+    'launch.prompt': { input: { key: string; agent: string; skill?: string }; output: { prompt: string } }
+    /** `prompt` as given (edited in the panel), else the one `launch.prompt` answers. */
     'launch.start': {
-      input: { key: string; target: string; agent: string; skill?: string }
+      input: { key: string; target: string; agent: string; skill?: string; prompt?: string }
       output: { workspaceId: string }
     }
   }

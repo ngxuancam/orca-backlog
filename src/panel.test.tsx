@@ -62,12 +62,36 @@ function host(signedIn: boolean, extra: Record<string, (input: never) => unknown
         focused: 'ws:w1',
         defaultAgent: 'claude'
       }),
+      'launch.prompt': (input: { key: string; skill?: string }) => ({
+        prompt: input.skill ? `/${input.skill} ${input.key}` : `Work on Backlog issue ${input.key}: Fix login`
+      }),
       'launch.start': (input) => ((started = input), { workspaceId: 'w1' }),
       'attachment.open': () => ({ path: 'x/shot.png', mode: 'preview' }),
+      'credentials.found': () => [],
       ...extra
     }
   })
 }
+
+test('signs in with a credential found on this computer', async () => {
+  let used: unknown
+  const found = [
+    { id: 'c1', space: 'nope.backlog.com', file: '~/.claude.json', keyHint: '…bad1', saved: false, error: 'Backlog 401: Authentication failure' },
+    { id: 'c2', space: 'acme.backlog.com', file: '~/repo/.mcp.json', keyHint: '…abcd', saved: false }
+  ]
+  view = await mount(panel, {
+    host: host(false, { 'credentials.found': () => found, 'credentials.use': (input) => ((used = input), state(session)) })
+  })
+  await view.settled()
+  const shown = JSON.stringify(view.tree())
+  assert.match(shown, /Authentication failure/)
+  assert.match(shown, /~\/repo\/\.mcp\.json · key …abcd/)
+  await view.press({ text: /^acme\.backlog\.com/ })
+  assert.deepEqual(used, { id: 'c2' })
+  assert.ok(view.find({ role: 'button', text: /^Assigned to me/ }))
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+})
 
 test('asks for a space and key when no login is found', async () => {
   view = await mount(panel, { host: host(false) })
@@ -100,15 +124,24 @@ test('lists my issues, opens one and starts an agent with the last skill', async
   assert.ok(view.find({ text: 'Fix login' }))
   assert.ok(view.find({ text: /#7 Fix login/ }))
   assert.ok(view.find({ text: /APP-0 Epic/ }))
+  assert.equal(view.valueOf({ label: 'Prompt' }), 'Work on Backlog issue APP-1: Fix login')
   await view.select({ label: 'Skill' }, 'code-review')
+  assert.equal(view.valueOf({ label: 'Sent to the agent' }), '/code-review APP-1')
   await view.press({ role: 'button', text: 'Start agent' })
   assert.deepEqual(started, {
     key: 'APP-1',
     target: 'ws:w1',
     agent: 'claude',
-    skill: 'code-review'
+    skill: 'code-review',
+    prompt: '/code-review APP-1'
   })
   assert.deepEqual(view.persisted.plugin.launchChoice, { target: 'ws:w1', agent: 'claude', skill: 'code-review' })
+  // An edited prompt survives a change of skill, until it is reset.
+  await view.type({ label: 'Sent to the agent' }, ' only the CSS')
+  await view.select({ label: 'Skill' }, 'none')
+  assert.equal(view.valueOf({ label: 'Prompt' }), '/code-review APP-1 only the CSS')
+  await view.press({ role: 'button', text: 'Reset prompt' })
+  assert.equal(view.valueOf({ label: 'Prompt' }), 'Work on Backlog issue APP-1: Fix login')
   assert.deepEqual(view.refusals, [])
   assert.deepEqual(view.errors, [])
 })

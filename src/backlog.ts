@@ -55,54 +55,53 @@ export async function api<T>(creds: Credentials, path: string, query?: Query): P
 
 // --- Credentials already on this machine -------------------------------------------------------
 
-function pairFrom(env: Record<string, unknown> | undefined): Credentials | null {
-  const space = env?.BACKLOG_DOMAIN
-  const apiKey = env?.BACKLOG_API_KEY
-  return typeof space === 'string' && typeof apiKey === 'string' && space && apiKey
-    ? { space: normalizeSpace(space), apiKey }
-    : null
-}
-
-/** First `{ BACKLOG_DOMAIN, BACKLOG_API_KEY }` pair anywhere in a parsed JSON config. */
-function findPair(value: unknown, depth = 0): Credentials | null {
-  if (!value || typeof value !== 'object' || depth > 8) return null
-  const own = pairFrom(value as Record<string, unknown>)
-  if (own) return own
-  for (const child of Object.values(value)) {
-    const found = findPair(child, depth + 1)
-    if (found) return found
-  }
-  return null
-}
-
-/** MCP client configs that commonly hold backlog-mcp-server's environment. */
-function mcpConfigFiles(): string[] {
+/** MCP client configs that commonly hold backlog-mcp-server's environment, user-wide first. */
+export function credentialFiles(workspacePath?: string): string[] {
   const home = homedir()
   const appData = appDataDir()
   return [
     join(home, '.claude.json'),
     join(home, '.cursor', 'mcp.json'),
     join(home, '.codeium', 'windsurf', 'mcp_config.json'),
+    join(home, '.gemini', 'settings.json'),
+    join(home, '.codex', 'config.toml'),
     join(appData, 'Claude', 'claude_desktop_config.json'),
-    join(appData, 'Code', 'User', 'mcp.json')
+    join(appData, 'Code', 'User', 'mcp.json'),
+    join(appData, 'Code - Insiders', 'User', 'mcp.json'),
+    ...(workspacePath
+      ? [join(workspacePath, '.mcp.json'), join(workspacePath, '.vscode', 'mcp.json'), join(workspacePath, '.cursor', 'mcp.json')]
+      : [])
   ]
 }
 
+const valuesOf = (text: string, name: string) =>
+  [...text.matchAll(new RegExp(String.raw`["']?${name}["']?\s*[:=]\s*["']([^"'\r\n]+)["']`, 'g'))].map((m) => m[1]!.trim())
+
 /**
- * Credentials from backlog-mcp-server entries in MCP client configs, in order. Not from the
- * environment: Orca withholds tokens from plugin workers (docs/reference/plugin-authoring.md).
+ * Every `BACKLOG_DOMAIN` / `BACKLOG_API_KEY` pair in a config, in order. Read as text, so JSON with
+ * comments (VS Code) and TOML (Codex) work too; the n-th domain goes with the n-th key.
  */
-export async function discoverCredentials(): Promise<{ creds: Credentials; source: 'mcp-config' }[]> {
-  const found: { creds: Credentials; source: 'mcp-config' }[] = []
-  for (const file of mcpConfigFiles()) {
+export function credentialPairs(text: string): Credentials[] {
+  const spaces = valuesOf(text, 'BACKLOG_DOMAIN')
+  const keys = valuesOf(text, 'BACKLOG_API_KEY')
+  return spaces
+    .slice(0, keys.length)
+    .map((space, i) => ({ space: normalizeSpace(space), apiKey: keys[i]! }))
+    .filter((c) => c.space && c.apiKey && !c.apiKey.startsWith('$'))
+}
+
+/**
+ * Credentials from backlog-mcp-server entries in MCP client configs, without duplicates. Not from
+ * the environment: Orca withholds tokens from plugin workers (docs/reference/plugin-authoring.md).
+ */
+export async function discoverCredentials(workspacePath?: string): Promise<{ creds: Credentials; file: string }[]> {
+  const found = new Map<string, { creds: Credentials; file: string }>()
+  for (const file of credentialFiles(workspacePath)) {
     const text = await readFile(file, 'utf8').catch(() => null)
-    if (!text) continue
-    try {
-      const creds = findPair(JSON.parse(text))
-      if (creds) found.push({ creds, source: 'mcp-config' })
-    } catch {
-      // Not JSON we can read: skip it.
+    for (const creds of text ? credentialPairs(text) : []) {
+      const key = `${creds.space} ${creds.apiKey}`
+      if (!found.has(key)) found.set(key, { creds, file })
     }
   }
-  return found
+  return [...found.values()]
 }

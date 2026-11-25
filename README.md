@@ -5,7 +5,7 @@
 **Your Nulab Backlog issues in Orca's sidebar.**<br>
 Find the ticket, read it, and hand it to an agent without leaving your workspace.
 
-[![Version](https://img.shields.io/badge/version-v0.3.4-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
+[![Version](https://img.shields.io/badge/version-v0.3.5-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
@@ -104,9 +104,12 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
 
 ## Tips
 
-- **Already use [backlog-mcp-server](https://github.com/nulab/backlog-mcp-server)?** With no account
-  saved, the plugin picks up its `BACKLOG_DOMAIN` / `BACKLOG_API_KEY` entry from an MCP config
-  (`~/.claude.json`, Cursor, Windsurf, Claude Desktop, VS Code), so there's nothing to type.
+- **Already use [backlog-mcp-server](https://github.com/nulab/backlog-mcp-server)?** The Connect
+  screen lists every `BACKLOG_DOMAIN` / `BACKLOG_API_KEY` entry it finds (Claude, Cursor, Windsurf,
+  Gemini, Codex, VS Code, and the workspace's `.mcp.json`); press one to sign in. Keys stay in the
+  plugin's worker; the panel only shows their last four characters.
+- **Start agent** sends `/your-skill ISSUE-KEY` when a skill is chosen (`$your-skill` for Codex);
+  with no skill, edit the prompt above the button first. Orca then shows the agent's terminal.
 - Previews saved in a workspace go to `.orca-backlog/`, a folder git ignores on its own. It cleans
   itself: an issue's previews go after 7 days unopened, and the folder stays under 200 MB.
 - **Behind a company proxy or antivirus** (`SELF_SIGNED_CERT_IN_CHAIN`)? The plugin trusts your
