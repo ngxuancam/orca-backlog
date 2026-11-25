@@ -13,6 +13,7 @@ import {
   IconButton,
   Input,
   KeyValue,
+  Link,
   List,
   ListItem,
   Markdown,
@@ -31,7 +32,6 @@ import {
   Text,
   Textarea,
   type Atom,
-  type IconName,
   type OrcaNode,
   type PanelContext,
   type TableCell,
@@ -51,7 +51,6 @@ import type {
   IssueDetail,
   IssueFields,
   IssueFilter,
-  IssueLink,
   IssueRow,
   IssueRun,
   LaunchOptions,
@@ -271,8 +270,48 @@ function cellsOf(r: IssueRow): Record<string, TableCell> {
 
 /** Which columns each table shows, kept per table; Key always stays so a row can be opened. */
 const shownColumns = atom<Record<string, string[]>>('shownColumns', {}, { persist: 'plugin' })
+/** Widths the person set, per table and column. Not kept: leaving the list for another screen
+ *  resets them, while opening an issue and coming Back keeps them. */
+type ColumnWidth = NonNullable<TableColumn['width']>
+const columnWidths = atom<Record<string, Record<string, ColumnWidth>>>({})
+const WIDTH_OPTIONS: Option[] = [
+  { value: 'default', label: 'Default width' },
+  { value: 'xs', label: 'XS' },
+  { value: 'sm', label: 'S' },
+  { value: 'md', label: 'M' },
+  { value: 'lg', label: 'L' },
+  { value: 'auto', label: 'Fill' }
+]
+
+function setWidth(table: string, column: string, width: string): void {
+  const all = read(columnWidths)
+  const mine = { ...all[table] }
+  if (width === 'default') delete mine[column]
+  else mine[column] = width as ColumnWidth
+  set(columnWidths, { ...all, [table]: mine })
+}
+
+/** A column as the table draws it: its definition with the width the person set. */
+function columnOf(table: string, column: string): TableColumn {
+  const width = read(columnWidths)[table]?.[column]
+  const { hideBelow: _, ...base } = COLUMNS[column]!
+  // An explicit width also keeps it when narrow: a column the person sized is one they want.
+  return width ? { ...base, width } : COLUMNS[column]!
+}
+
+/** Back to the default columns and widths; the choice is otherwise kept. */
+function resetColumns(table: string): void {
+  const { [table]: _, ...shown } = read(shownColumns)
+  set(shownColumns, shown)
+  const { [table]: __, ...widths } = read(columnWidths)
+  set(columnWidths, widths)
+}
+
 /** The table whose column picker is open. */
 const pickingColumns = atom<string | null>(null)
+
+/** Whether the table's columns or widths differ from its defaults. */
+const customised = (table: string) => Boolean(read(shownColumns)[table] || Object.keys(read(columnWidths)[table] ?? {}).length)
 
 function columnsOf(table: string, defaults: readonly string[]): string[] {
   const chosen = read(shownColumns)[table] ?? defaults
@@ -291,19 +330,36 @@ function ColumnPicker({ table, defaults }: { table: string; defaults: readonly s
   const shown = columnsOf(table, defaults)
   return (
     <Box border radius="md" padding="sm" gap="sm">
-      <Box columns={2} gap="xs">
+      <Row gap="xs" wrap>
         {COLUMN_ORDER.map((c) => (
-          <Checkbox
-            key={c}
-            label={COLUMNS[c]!.label}
-            checked={shown.includes(c)}
-            disabled={c === 'key'}
-            onChange={(on) => toggleColumn(table, defaults, c, on)}
-          />
+          <Box key={c} direction="row" gap="xs" align="center" grow minWidth={220}>
+            <Box grow>
+              <Checkbox
+                label={COLUMNS[c]!.label}
+                checked={shown.includes(c)}
+                disabled={c === 'key'}
+                onChange={(on) => toggleColumn(table, defaults, c, on)}
+              />
+            </Box>
+            {shown.includes(c) ? (
+              <Box width={110} shrink={false}>
+                <Select
+                  label={`${COLUMNS[c]!.label} width`}
+                  labelHidden
+                  value={read(columnWidths)[table]?.[c] ?? 'default'}
+                  options={WIDTH_OPTIONS}
+                  onChange={(w) => setWidth(table, c, w)}
+                />
+              </Box>
+            ) : null}
+          </Box>
         ))}
-      </Box>
+      </Row>
+      <Text muted size="xs">
+        Widths last until you leave this list; the columns you pick stay.
+      </Text>
       <Row gap="xs">
-        <Button size="sm" variant="ghost" onPress={() => set(shownColumns, { ...read(shownColumns), [table]: [...defaults] })}>
+        <Button size="sm" variant="ghost" onPress={() => resetColumns(table)}>
           Reset columns
         </Button>
         <Button size="sm" variant="ghost" onPress={() => set(pickingColumns, null)}>
@@ -453,12 +509,21 @@ function setFilter(part: Partial<Filters>): void {
 }
 
 function openProject(projectId: string): void {
-  set(screen, 'issues')
+  goTo('issues')
   setFilter({ projectId, keyword: '' })
 }
 
+/** Moves to another screen; set widths only last while the person stays on one. */
+function goTo(next: 'home' | 'issues' | 'settings'): void {
+  if (read(screen) !== next) {
+    set(columnWidths, {})
+    set(pickingColumns, null)
+  }
+  set(screen, next)
+}
+
 function goHome(): void {
-  set(screen, 'home')
+  goTo('home')
   loadDashboard()
 }
 
@@ -490,7 +555,7 @@ function applyAuth(next: AuthState): void {
     // Project, status and user ids belong to the old space.
     set(openKey, null)
     patch(filters, { projectId: 'all', assignee: 'me', status: 'notClosed', priorityId: 'all' })
-    if (read(screen) === 'issues') set(screen, 'home')
+    if (read(screen) === 'issues') goTo('home')
   }
   void loadMeta()
   refresh()
@@ -570,7 +635,7 @@ async function loadSettings(): Promise<void> {
 
 function openSettings(): void {
   set(openKey, null)
-  set(screen, 'settings')
+  goTo('settings')
   void loadSettings()
 }
 
@@ -900,7 +965,10 @@ function IssueTable(props: {
   return (
     <Stack gap="xs">
       <ErrorCallout title="Backlog" text={state.error} />
-      <Row justify="end">
+      <Row justify="end" gap="xs">
+        <Button size="sm" variant="ghost" icon="refresh" disabled={!customised(props.table)} onPress={() => resetColumns(props.table)}>
+          Reset columns
+        </Button>
         <Button size="sm" variant="ghost" icon="settings" onPress={() => set(pickingColumns, picking ? null : props.table)}>
           {`Columns (${columns.length})`}
         </Button>
@@ -918,7 +986,7 @@ function IssueTable(props: {
         onSortChange={props.onSort}
         onSelectionChange={({ keys }) => keys[0] && openFromList(keys[0])}
         onRowAction={({ key }) => openFromList(key)}
-        columns={columns.map((c) => COLUMNS[c]!)}
+        columns={columns.map((c) => columnOf(props.table, c))}
         rows={state.rows.map((r) => ({ key: r.key, cells: cellsOf(r) }))}
       />
     </Stack>
@@ -1576,25 +1644,56 @@ const isPicked = (list: string, url: string) => {
   const p = read(pickedLink)
   return p?.list === list && p.url === url
 }
-/** A second press on the picked link hides its actions again. */
+/** A second press on ⋯ closes the menu again. */
 const pickLink = (list: string, url: string) => set(pickedLink, isPicked(list, url) ? null : { list, url })
 
-/** Under a list: what can be done with its picked link. */
-function LinkActions({ list }: { list: 'links' | 'pullRequests' }) {
-  const p = read(pickedLink)
-  if (p?.list !== list) return null
+/**
+ * What a right-click menu would offer. Orca's components have no right-click and no popup, so
+ * the ⋯ beside a link opens this menu right under it; a left click on the link still opens it.
+ */
+function LinkMenu({ list, url }: { list: Place; url: string }) {
+  const run = (how: 'copy' | 'browser' | 'orca') => {
+    set(pickedLink, null)
+    void linkAction(list, url, how)
+  }
   return (
-    <Row gap="xs" wrap>
-      <Button size="sm" icon="copy" onPress={() => linkAction(list, p.url, 'copy')}>
+    <Box border radius="md" background="card" padding="xs" gap="none" align="start">
+      <Button size="sm" variant="ghost" icon="copy" onPress={() => run('copy')}>
         Copy link
       </Button>
-      <Button size="sm" icon="open-external" onPress={() => linkAction(list, p.url, 'browser')}>
+      <Button size="sm" variant="ghost" icon="open-external" onPress={() => run('browser')}>
         Open in browser
       </Button>
-      <Button size="sm" icon="globe" onPress={() => linkAction(list, p.url, 'orca')}>
+      <Button size="sm" variant="ghost" icon="globe" onPress={() => run('orca')}>
         Open in Orca
       </Button>
-    </Row>
+    </Box>
+  )
+}
+
+/** A link: left click opens it in the browser; ⋯ opens its menu underneath. */
+function LinkRow(props: { list: 'links' | 'pullRequests'; url: string; title: string; description: string }) {
+  const { list, url, title, description } = props
+  const open = isPicked(list, url)
+  return (
+    <Stack gap="xs">
+      <Row gap="xs" align="center">
+        <Box grow minWidth={0} gap="none">
+          <Link href={url}>{title}</Link>
+          <Text muted size="xs" truncate>
+            {description}
+          </Text>
+        </Box>
+        <IconButton
+          icon={open ? 'close' : 'more'}
+          label={`${open ? 'Close the menu of' : 'More for'} ${title}`}
+          size="sm"
+          variant="ghost"
+          onPress={() => pickLink(list, url)}
+        />
+      </Row>
+      {open ? <LinkMenu list={list} url={url} /> : null}
+    </Stack>
   )
 }
 
@@ -1609,31 +1708,20 @@ function Notice({ place }: { place: Place }) {
   )
 }
 
-const LINK_ICON: Record<IssueLink['from'], IconName> = {
-  issue: 'layers',
-  'pull request': 'branch',
-  description: 'link',
-  comment: 'link'
-}
-
-/** Every web link of the issue, its own page first; press one for its actions. */
+/** Every web link of the issue, its own page first. */
 function Links({ issue }: { issue: IssueDetail }) {
   return (
     <Section title={`Links (${issue.links.length})`} id="links">
-      <Stack gap="xs">
-        <List label="Links">
-          {issue.links.map((l) => (
-            <ListItem
-              key={l.url}
-              icon={LINK_ICON[l.from]}
-              title={l.label}
-              description={l.from === 'issue' ? l.url : `${l.from} · ${l.url}`}
-              current={isPicked('links', l.url)}
-              onPress={() => pickLink('links', l.url)}
-            />
-          ))}
-        </List>
-        <LinkActions list="links" />
+      <Stack gap="sm">
+        {issue.links.map((l) => (
+          <LinkRow
+            key={l.url}
+            list="links"
+            url={l.url}
+            title={l.label}
+            description={l.from === 'issue' ? l.url : `${l.from} · ${l.url}`}
+          />
+        ))}
         <Notice place="links" />
       </Stack>
     </Section>
@@ -1645,20 +1733,16 @@ function PullRequests({ issue }: { issue: IssueDetail }) {
   return (
     <Section title={`Pull requests (${prs.length})`} id="pullRequests">
       {prs.length ? (
-        <Stack gap="xs">
-          <List label="Pull requests">
-            {prs.map((pr) => (
-              <ListItem
-                key={pr.key}
-                icon="branch"
-                title={`#${pr.number} ${pr.summary}`}
-                description={`${pr.status} · ${pr.repo}: ${pr.branch} → ${pr.base}${pr.author ? ` · ${pr.author}` : ''}`}
-                current={isPicked('pullRequests', pr.url)}
-                onPress={() => pickLink('pullRequests', pr.url)}
-              />
-            ))}
-          </List>
-          <LinkActions list="pullRequests" />
+        <Stack gap="sm">
+          {prs.map((pr) => (
+            <LinkRow
+              key={pr.key}
+              list="pullRequests"
+              url={pr.url}
+              title={`#${pr.number} ${pr.summary}`}
+              description={`${pr.status} · ${pr.repo}: ${pr.branch} → ${pr.base}${pr.author ? ` · ${pr.author}` : ''}`}
+            />
+          ))}
           <Notice place="pullRequests" />
         </Stack>
       ) : (

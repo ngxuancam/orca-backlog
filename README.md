@@ -5,7 +5,7 @@
 **Your Nulab Backlog issues in Orca's sidebar.**<br>
 Find the ticket, read it, and hand it to an agent without leaving your workspace.
 
-[![Version](https://img.shields.io/badge/version-v0.3.8-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
+[![Version](https://img.shields.io/badge/version-v0.3.9-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
@@ -116,10 +116,12 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
   a comment box and status, assignee, priority, type, category, milestone, dates and hours. Each
   save sends only what changed, with the comment, as Backlog records it.
 - **Columns** (above each issue table) picks which fields it shows, like Backlog's own column
-  setting: assignee, registered by, dates, category, milestone, version, hours… Each table keeps its
-  choice; click a header to sort by it.
-- **Links** in an issue (its page, pull requests, and those in the description and comments): press
-  one to *Copy link*, *Open in browser* or *Open in Orca* (Orca's own browser).
+  setting: assignee, registered by, dates, category, milestone, version, hours… and sets a width
+  for each. The picked columns stay; widths last until you leave the list (opening an issue and
+  coming back keeps them). *Reset columns* puts the defaults back; click a header to sort.
+- **Links** in an issue (its page, pull requests, and those in the description and comments) open
+  in the browser on a click; their **⋯** menu offers *Copy link*, *Open in browser* and *Open in
+  Orca* (Orca's own browser).
 - **Settings → Audit log** lists every change the plugin made: to Backlog (with the API call, e.g.
   `PATCH /api/v2/issues/APP-1`) and on this computer (accounts, settings, agents started, files
   saved), failed ones too. The newest 500 stay on this computer; API keys are never logged.
