@@ -332,6 +332,12 @@ test('Columns picks which fields a table shows, per table, and remembers it', as
   assert.deepEqual(view.columnsOf({ label: 'My issues' }, wide), ['key', 'summary', 'assignee', 'status', 'due', 'estimatedHours'])
   assert.deepEqual(view.persisted.plugin.shownColumns, { home: ['key', 'summary', 'assignee', 'status', 'due', 'estimatedHours'] })
   // A width lasts while the list stays open, and an issue opened from it, and Back.
+  await view.press({ role: 'button', text: 'Done' })
+  // Widths have their own button: one row per shown column, name on the left, width on the right.
+  await view.press({ role: 'button', text: 'Widths' })
+  assert.equal(view.find({ label: 'Assignee', type: 'Checkbox' }), null)
+  assert.ok(view.find({ label: 'Estimated width' }))
+  assert.equal(view.find({ label: 'Priority width' }), null)
   await view.select({ label: 'Summary width' }, 'lg')
   const width = () => (view!.find({ label: 'My issues' })?.props.columns as { key: string; width?: string }[]).find((c) => c.key === 'summary')?.width
   assert.equal(width(), 'lg')
