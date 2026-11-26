@@ -5,7 +5,7 @@
 **Your Nulab Backlog issues in Orca's sidebar.**<br>
 Find the ticket, read it, and hand it to an agent without leaving your workspace.
 
-[![Version](https://img.shields.io/badge/version-v0.3.10-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
+[![Version](https://img.shields.io/badge/version-v0.3.11-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
@@ -111,6 +111,13 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
 - **Start agent** sends `/your-skill ISSUE-KEY` when a skill is chosen (`$your-skill` for Codex);
   with no skill, edit the prompt above the button first. Orca then shows the agent's terminal, and
   the issue lists it under *Worktrees*: press one to go back to it.
+- **Worktrees** of an issue can also be linked by hand (*Link a worktree*). Pressing one shows it
+  with its terminal, opening a terminal when it has none; ✕ unlinks it, and a deleted worktree
+  drops off the list by itself.
+- **Pull request conflicts**: open pull requests (on Home under *My pull requests*, and in an
+  issue) get a red *Conflict* badge when they would not merge cleanly. Backlog's API does not say,
+  so the check uses git on a clone of the repository among your Orca workspaces: it fetches only
+  the PR's two branches and runs `git merge-tree` (git 2.38+), leaving your working tree alone.
 - **Edit an issue**: the ✏️ in the issue's header (which stays at the top) turns the summary and
   description into fields in place. The **Update issue** bar pinned at the bottom opens upward with
   a comment box and status, assignee, priority, type, category, milestone, dates and hours. Each

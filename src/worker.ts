@@ -39,10 +39,13 @@ import type {
   IssueRun,
   LinkedIssue,
   PullRequest,
+  ConflictCheck,
   Meta,
   Option,
   Session
 } from './protocol'
+import { PR_OPEN } from './protocol'
+import { checkMerge, git, remoteFor } from './git'
 
 const PAGE = 50
 /** Backlog's fixed id for "Closed"; every project has it. */
@@ -100,7 +103,7 @@ type PullRequestEntity = {
   createdUser: Named | null
   updated: string
 }
-type Repository = Named
+type Repository = Named & { httpUrl?: string; sshUrl?: string }
 type Comment = { id: number; content: string | null; createdUser: Named; created: string }
 
 const day = (iso: string | null) => (iso ? iso.slice(0, 10) : null)
@@ -380,15 +383,35 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
     return { parent: parent && linked(parent), children: children.map(linked), related: related.map(linked) }
   }
 
+  const reposOf = (project: Project) =>
+    orNone(cached(`repos:${project.id}`, () => get<Repository[]>(`/projects/${project.id}/git/repositories`)))
+
+  /** What a conflict check needs of each PR the panel was given, by `PullRequest.key`. */
+  const prInfo = new Map<string, { urls: string[]; base: string; branch: string; statusId: number }>()
+  function toPullRequest(project: Project, repo: Repository, pr: PullRequestEntity): PullRequest {
+    const key = `${repo.id}-${pr.number}`
+    prInfo.set(key, { urls: [repo.httpUrl ?? '', repo.sshUrl ?? ''], base: pr.base, branch: pr.branch, statusId: pr.status.id })
+    return {
+      key,
+      number: pr.number,
+      summary: pr.summary,
+      repo: repo.name,
+      branch: pr.branch,
+      base: pr.base,
+      status: pr.status.name,
+      statusId: pr.status.id,
+      author: pr.createdUser?.name ?? null,
+      updated: Date.parse(pr.updated),
+      url: `https://${current!.creds.space}/git/${project.projectKey}/${encodeURIComponent(repo.name)}/pullRequests/${pr.number}`
+    }
+  }
+
   /** Pull requests in any of the project's repositories that link this issue. */
   async function pullRequestsOf(i: Issue): Promise<PullRequest[]> {
     const project = (await projects()).find((p) => p.id === i.projectId)
     if (!project) return []
-    const repos = await orNone(
-      cached(`repos:${project.id}`, () => get<Repository[]>(`/projects/${project.id}/git/repositories`))
-    )
     const perRepo = await Promise.all(
-      repos.map(async (repo) =>
+      (await reposOf(project)).map(async (repo) =>
         (
           await orNone(
             get<PullRequestEntity[]>(`/projects/${project.id}/git/repositories/${repo.id}/pullRequests`, {
@@ -396,25 +419,70 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
               count: 20
             })
           )
-        ).map(
-          (pr): PullRequest => ({
-            key: `${repo.id}-${pr.number}`,
-            number: pr.number,
-            summary: pr.summary,
-            repo: repo.name,
-            branch: pr.branch,
-            base: pr.base,
-            status: pr.status.name,
-            statusId: pr.status.id,
-            author: pr.createdUser?.name ?? null,
-            updated: Date.parse(pr.updated),
-            url: `https://${current!.creds.space}/git/${project.projectKey}/${encodeURIComponent(repo.name)}/pullRequests/${pr.number}`
-          })
-        )
+        ).map((pr) => toPullRequest(project, repo, pr))
       )
     )
     return perRepo.flat().sort((a, b) => b.updated - a.updated)
   }
+
+  /** My open pull requests: Backlog lists them per repository, so every repository is asked. */
+  async function myPullRequests(): Promise<PullRequest[]> {
+    const me = current!.session.me.id
+    const perProject = await Promise.all(
+      (await projects()).map(async (project) =>
+        Promise.all(
+          (await reposOf(project)).map(async (repo) =>
+            (
+              await orNone(
+                get<PullRequestEntity[]>(`/projects/${project.id}/git/repositories/${repo.id}/pullRequests`, {
+                  statusId: [PR_OPEN],
+                  createdUserId: [me],
+                  count: 100
+                })
+              )
+            ).map((pr) => ({ ...toPullRequest(project, repo, pr), project: `${project.name} (${project.projectKey})` }))
+          )
+        )
+      )
+    )
+    return perProject.flat(2).sort((a, b) => b.updated - a.updated)
+  }
+
+  /** Folders of the Orca workspaces on this computer, where a clone of a repository may be. */
+  async function localFolders(): Promise<string[]> {
+    const { workspaces } = await orca.host.call('workspace.list')
+    const dirs = workspaces.filter((w) => (w.hostId === 'local' || w.hostId === null) && w.path).map((w) => w.path!)
+    return [...new Set(dirs)]
+  }
+
+  /** `dir
+repo urls` → the matching remote of that folder (null: none). */
+  const remotes = new Map<string, Promise<string | null>>()
+  async function cloneOf(urls: string[], dirs: string[]): Promise<{ dir: string; remote: string } | null> {
+    for (const dir of dirs) {
+      const id = `${dir}
+${urls.join(' ')}`
+      if (!remotes.has(id)) remotes.set(id, remoteFor(git.run, dir, urls).catch(() => null))
+      const remote = await remotes.get(id)!
+      if (remote) return { dir, remote }
+    }
+    return null
+  }
+
+  /** One check at a time: fetches into a shared clone (or its worktrees) would race for its locks. */
+  let gitQueue: Promise<unknown> = Promise.resolve()
+  async function conflictOf(key: string, dirs: string[]): Promise<ConflictCheck> {
+    const info = prInfo.get(key)
+    if (!info) return { state: 'unknown', reason: 'Reload the list: this pull request is not known yet.' }
+    if (info.statusId !== PR_OPEN) return { state: 'unknown', reason: 'Only open pull requests are checked.' }
+    if (!info.urls.some(Boolean)) return { state: 'unknown', reason: 'Backlog gave no URL for the repository.' }
+    const clone = await cloneOf(info.urls, dirs)
+    if (!clone) return { state: 'unknown', reason: 'No clone of this repository among the Orca workspaces on this computer.' }
+    const run = gitQueue.then(() => checkMerge(git.run, clone.dir, clone.remote, info.base, info.branch))
+    gitQueue = run.catch(() => undefined)
+    return run.catch((e): ConflictCheck => ({ state: 'unknown', reason: `git: ${(e as Error).message}` }))
+  }
+
   const downloadAttachment = async (key: string, id: number) =>
     (await request(await creds(), `/issues/${encodeURIComponent(key)}/attachments/${id}`)).arrayBuffer()
 
@@ -630,6 +698,13 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
     if (removed) orca.log(`cleaned ${removed} old preview folder(s)`)
   })()
 
+  orca.panels.handle('pullRequests.mine', () => myPullRequests())
+  orca.panels.handle('pullRequests.conflicts', async ({ keys }) => {
+    const dirs = await localFolders()
+    const checks = await Promise.all(keys.map(async (k) => [k, await conflictOf(k, dirs)] as const))
+    return Object.fromEntries(checks)
+  })
+
   orca.panels.handle('link.copy', async ({ url }) => {
     await copyToClipboard(webUrl(url))
     return { copied: true as const }
@@ -734,7 +809,31 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
     await orca.storage.set(RUNS, Object.fromEntries(kept))
   }
 
-  orca.panels.handle('runs.get', async ({ key }): Promise<IssueRun[]> => {
+  orca.panels.handle('runs.get', ({ key }) => liveRuns(key))
+
+  orca.panels.handle('runs.link', async ({ key, workspaceId }) => {
+    await audit.track(inSpace({ action: 'Linked worktree', api: 'plugin storage', target: key, details: workspaceId }), async () => {
+      const { workspaces } = await orca.host.call('workspace.list')
+      if (!workspaces.some((w) => w.id === workspaceId)) throw new Error('That worktree is gone.')
+      await rememberRun(key, { workspaceId, agent: '', startedAt: Date.now(), linked: true })
+    })
+    return liveRuns(key)
+  })
+
+  orca.panels.handle('runs.unlink', async ({ key, workspaceId }) => {
+    await audit.track(inSpace({ action: 'Unlinked worktree', api: 'plugin storage', target: key, details: workspaceId }), async () => {
+      const all = await readRuns()
+      const id = runsKey() + key
+      const left = (all[id] ?? []).filter((r) => r.workspaceId !== workspaceId)
+      if (left.length) all[id] = left
+      else delete all[id]
+      await orca.storage.set(RUNS, all)
+    })
+    return liveRuns(key)
+  })
+
+  /** The issue's workspaces that still exist; gone ones are forgotten. */
+  async function liveRuns(key: string): Promise<IssueRun[]> {
     const id = runsKey() + key
     const runs = (await readRuns())[id] ?? []
     if (!runs.length) return []
@@ -751,10 +850,21 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
       const w = byId.get(r.workspaceId)!
       return { ...r, label: `${w.project ?? 'Folder'} / ${w.name}`, branch: w.branch ?? null }
     })
-  })
+  }
 
   orca.panels.handle('runs.focus', async ({ workspaceId }) => {
     await orca.host.call('workspace.open', { workspaceId })
+    // Its terminal, or a new one when it has none (closed since, or never opened).
+    try {
+      const { terminals } = await orca.host.call('terminal.list', { workspaceId })
+      if (terminals[0]) await focusTerminal(terminals[0].id)
+      else {
+        const where = await workspaceTarget(workspaceId)
+        await cliLauncher.openTerminal({ id: workspaceId, ...('path' in where && where.path ? { path: where.path } : {}) })
+      }
+    } catch (e) {
+      orca.log(`terminal for ${workspaceId}: ${(e as Error).message}`)
+    }
     return { opened: true }
   })
 

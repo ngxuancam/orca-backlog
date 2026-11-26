@@ -1,13 +1,20 @@
 // Runs src/worker.ts's activate(orca) over a mock host, with Backlog's HTTP API stubbed.
 import { afterEach, assert, mockHost, mountWorker, test } from 'orca/testing'
+import { git, type GitRun } from './git'
 import { cliLauncher } from './orcaCli'
 import * as main from './worker'
 
 const realFetch = globalThis.fetch
 const realLaunch = cliLauncher.launchWithPrompt
+const realGit = git.run
+const terminals: unknown[] = []
+cliLauncher.openTerminal = async (w) => void terminals.push(w)
 afterEach(() => {
   globalThis.fetch = realFetch
   cliLauncher.launchWithPrompt = realLaunch
+  git.run = realGit
+  cliLauncher.openTerminal = async (w) => void terminals.push(w)
+  terminals.length = 0
 })
 
 const issue = {
@@ -34,7 +41,7 @@ const issue = {
 const writes: { method: string; path: string; form: string }[] = []
 
 /** Answers Backlog paths and records every URL asked for. */
-function stubBacklog(): URL[] {
+function stubBacklog(extra: Record<string, unknown> = {}): URL[] {
   const seen: URL[] = []
   const routes: Record<string, unknown> = {
     '/api/v2/projects': [{ id: 10, projectKey: 'APP', name: 'App' }],
@@ -52,7 +59,8 @@ function stubBacklog(): URL[] {
     '/api/v2/issues': [issue],
     '/api/v2/issues/count': { count: 1 },
     '/api/v2/issues/APP-1': issue,
-    '/api/v2/issues/APP-1/comments': [{ id: 9, content: 'ok', createdUser: { id: 8, name: 'Boss' }, created: issue.created }]
+    '/api/v2/issues/APP-1/comments': [{ id: 9, content: 'ok', createdUser: { id: 8, name: 'Boss' }, created: issue.created }],
+    ...extra
   }
   globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input))
@@ -363,4 +371,78 @@ test('finds backlog-mcp-server entries on this machine and signs in with a chose
     for (const [name, value] of Object.entries(env)) value === undefined ? delete process.env[name] : (process.env[name] = value)
     await rm(home, { recursive: true, force: true })
   }
+})
+
+test('lists my open pull requests and checks them for conflicts in a local clone', async () => {
+  const pr = (number: number, branch: string, status = { id: 1, name: 'Open' }) => ({
+    id: number,
+    number,
+    summary: `PR ${number}`,
+    branch,
+    base: 'main',
+    status,
+    createdUser: { id: 7, name: 'Me' },
+    updated: `2026-11-2${number}T00:00:00Z`
+  })
+  const seen = stubBacklog({
+    '/api/v2/projects/10/git/repositories': [
+      { id: 3, name: 'web', httpUrl: 'https://acme.backlog.com/git/APP/web.git', sshUrl: 'acme@acme.git.backlog.com:/APP/web.git' }
+    ],
+    '/api/v2/projects/10/git/repositories/3/pullRequests': [pr(1, 'fix/a'), pr(2, 'fix/b')]
+  })
+  const calls: string[][] = []
+  git.run = (async (dir, args) => {
+    calls.push([dir, ...args])
+    if (args[0] === 'remote') return { code: 0, stdout: 'origin\tacme@acme.git.backlog.com:/APP/web.git (fetch)\n', stderr: '' }
+    if (args[0] === 'fetch') return { code: 0, stdout: '', stderr: '' }
+    const clash = args.includes('refs/remotes/origin/fix/b')
+    return { code: clash ? 1 : 0, stdout: clash ? 'tree\nsrc/a.ts\n' : 'tree\n', stderr: '' }
+  }) as GitRun
+  const worker = await mountWorker(main, { host: saved() })
+  await worker.request('auth.status')
+  const mine = await worker.request('pullRequests.mine')
+  assert.deepEqual(mine.map((p) => [p.key, p.project]), [['3-2', 'App (APP)'], ['3-1', 'App (APP)']])
+  const asked = seen.find((u) => u.pathname.endsWith('/repositories/3/pullRequests'))!
+  assert.deepEqual(asked.searchParams.getAll('statusId[]'), ['1'])
+  assert.deepEqual(asked.searchParams.getAll('createdUserId[]'), ['7'])
+  const checks = await worker.request('pullRequests.conflicts', { keys: ['3-1', '3-2', '9-9'] })
+  assert.deepEqual(checks['3-1'], { state: 'clean' })
+  assert.deepEqual(checks['3-2'], { state: 'conflict', files: ['src/a.ts'] })
+  assert.equal(checks['9-9']?.state, 'unknown')
+  // Only the PR's two branches are fetched, in the workspace's folder; nothing else runs.
+  assert.deepEqual(calls.find((c) => c[1] === 'fetch'), [
+    '/r', 'fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main', '+refs/heads/fix/a:refs/remotes/origin/fix/a'
+  ])
+  assert.deepEqual([...new Set(calls.map((c) => c[1]))], ['remote', 'fetch', 'merge-tree'])
+})
+
+test('links an existing worktree to an issue; pressing it shows its terminal, or opens one', async () => {
+  stubBacklog()
+  const host = saved()
+  host.respond('workspace.open', { opened: true })
+  host.respond('terminal.focus', { focused: true })
+  host.respond('terminal.list', { terminals: [], truncated: false })
+  const worker = await mountWorker(main, { host })
+  await worker.request('auth.status')
+  const runs = await worker.request('runs.link', { key: 'APP-1', workspaceId: 'w1' })
+  assert.deepEqual(
+    runs.map(({ workspaceId, label, agent, linked }) => ({ workspaceId, label, agent, linked })),
+    [{ workspaceId: 'w1', label: 'Repo / main', agent: '', linked: true }]
+  )
+  await assert.rejects(worker.request('runs.link', { key: 'APP-1', workspaceId: 'gone' }), /gone/)
+  // No terminal in it: one opens there, through the CLI.
+  await worker.request('runs.focus', { workspaceId: 'w1' })
+  assert.deepEqual(host.callsOf('workspace.open').at(-1), { workspaceId: 'w1' })
+  assert.deepEqual(terminals, [{ id: 'w1', path: '/r' }])
+  // A terminal already there is focused instead.
+  host.respond('terminal.list', { terminals: [{ id: 't9' }], truncated: false })
+  await worker.request('runs.focus', { workspaceId: 'w1' })
+  assert.deepEqual(host.callsOf('terminal.focus').at(-1), { terminalId: 't9' })
+  assert.equal(terminals.length, 1)
+  assert.deepEqual(await worker.request('runs.unlink', { key: 'APP-1', workspaceId: 'w1' }), [])
+  assert.deepEqual(
+    (await worker.request('audit.list')).map((e) => e.action).slice(0, 3),
+    ['Unlinked worktree', 'Linked worktree', 'Linked worktree']
+  )
+  assert.deepEqual(worker.refusals, [])
 })

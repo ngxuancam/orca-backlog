@@ -131,6 +131,8 @@ function host(signedIn: boolean, extra: Record<string, (input: never) => unknown
       'audit.clear': () => (auditRows = [{ ...auditRows[0]!, id: 'c', action: 'Cleared the audit log', details: '1 entries' }]),
       'runs.get': () => runs,
       'runs.focus': (input) => ((focused = input), { opened: true }),
+      'pullRequests.mine': () => [],
+      'pullRequests.conflicts': () => ({}),
       ...extra
     }
   })
@@ -483,4 +485,67 @@ test('issue type colours map to the nearest Orca tone', () => {
   assert.equal(toneOfColor('#666666'), 'neutral')
   assert.equal(toneOfColor('#3b9dbd'), 'neutral') // blue
   assert.equal(toneOfColor(null), 'neutral')
+})
+
+test('shows a Conflict badge on open pull requests that conflict, on Home and in the issue', async () => {
+  const asked: string[][] = []
+  const pr = detail.pullRequests[0]!
+  const mine = [
+    { ...pr, key: '1-7', project: 'App (APP)' },
+    { ...pr, key: '1-8', number: 8, summary: 'Tidy up', url: 'https://acme.backlog.com/git/APP/app/pullRequests/8', project: 'App (APP)' }
+  ]
+  view = await mount(panel, {
+    host: host(true, {
+      'pullRequests.mine': () => mine,
+      'pullRequests.conflicts': (input: { keys: string[] }) => (
+        asked.push(input.keys), Object.fromEntries(input.keys.map((k) => [k, k === '1-7' ? { state: 'conflict', files: ['a.ts'] } : { state: 'clean' }]))
+      )
+    })
+  })
+  await view.settled()
+  // One PR per request, so each stays within a request's time limit.
+  assert.deepEqual(asked, [['1-7'], ['1-8']])
+  assert.ok(view.find({ type: 'Link', text: '#8 Tidy up' }))
+  assert.equal(view.findAll({ type: 'Badge', text: 'Conflict' }).length, 1)
+  assert.ok(view.find({ type: 'Text', text: '1 pull request has conflicts.' }))
+  // Only a conflict shows: nothing for a clean one, and no file list.
+  assert.equal(view.find({ type: 'Badge', text: /No conflict|Checking/ }), null)
+  assert.equal(view.find({ text: /a\.ts/ }), null)
+  await view.activateRow({ type: 'Table' }, 'APP-1')
+  assert.ok(view.find({ type: 'Badge', text: 'Conflict' }))
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+})
+
+test('links an existing worktree to the issue; its line shows it, ✕ unlinks it', async () => {
+  let linked: IssueRun[] = []
+  const calls: unknown[] = []
+  view = await mount(panel, {
+    host: host(true, {
+      'runs.get': () => linked,
+      'runs.link': (input: { key: string; workspaceId: string }) => (
+        calls.push(['link', input]),
+        (linked = [{ workspaceId: input.workspaceId, label: 'repo / main', branch: 'main', agent: '', startedAt: 0, linked: true }])
+      ),
+      'runs.unlink': (input) => (calls.push(['unlink', input]), (linked = []))
+    })
+  })
+  await view.settled()
+  await view.activateRow({ type: 'Table' }, 'APP-1')
+  await view.settled()
+  assert.ok(view.find({ label: 'Link a worktree' }))
+  assert.equal(view.find({ role: 'button', text: 'Link' })?.props.disabled, true)
+  await view.select({ label: 'Link a worktree' }, 'ws:w1')
+  await view.press({ role: 'button', text: 'Link' })
+  assert.deepEqual(calls, [['link', { key: 'APP-1', workspaceId: 'w1' }]])
+  assert.ok(view.find({ type: 'Text', text: /^linked · main/ }))
+  // A linked worktree is no longer offered.
+  assert.equal(view.find({ label: 'Link a worktree' }), null)
+  await view.press({ type: 'Link', text: 'repo / main' })
+  assert.deepEqual(focused, { workspaceId: 'w1' })
+  await view.press({ label: 'Unlink repo / main' })
+  assert.deepEqual(calls.at(-1), ['unlink', { key: 'APP-1', workspaceId: 'w1' }])
+  assert.equal(view.find({ type: 'Link', text: 'repo / main' }), null)
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
 })
