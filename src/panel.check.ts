@@ -1,7 +1,7 @@
 // `orca plugin check` renders the panel once per scenario; `orca plugin shot --scenario` draws one.
 // Mock data only: a fictional "Acme Shop" space. The README screenshots come from these.
 import { defineCheck } from 'orca/testing'
-import type { AuthState, IssueDetail, IssueRow, Meta } from './protocol'
+import type { AuthState, ConflictCheck, IssueDetail, IssueRow, Meta } from './protocol'
 
 const hour = 3_600_000
 const now = Date.now()
@@ -153,6 +153,27 @@ const requests = {
     ]
   }),
   'credentials.found': () => [],
+  'pullRequests.mine': () => [
+    { ...detail.pullRequests[0]!, project: 'Acme Shop (SHOP)' },
+    {
+      key: '5-215',
+      number: 215,
+      summary: 'Cache product images on the CDN',
+      repo: 'shop-web',
+      branch: 'feature/SHOP-150',
+      base: 'main',
+      status: 'Open',
+      statusId: 1,
+      author: 'Alex Kim',
+      updated: now - 5 * hour,
+      url: 'https://acme.backlog.com/git/SHOP/shop-web/pullRequests/215',
+      project: 'Acme Shop (SHOP)'
+    }
+  ],
+  'pullRequests.conflicts': (input: { keys: string[] }) =>
+    Object.fromEntries(
+      input.keys.map((k): [string, ConflictCheck] => [k, k === '5-215' ? { state: 'conflict', files: ['src/cdn.ts'] } : { state: 'clean' }])
+    ),
   'audit.list': () => [
     { id: 'a3', at: now - 5 * 60_000, action: 'Updated issue', api: 'PATCH /api/v2/issues/SHOP-142', target: 'SHOP-142', details: 'status → 2; comment "Fix is up for review"', space: 'acme.backlog.com', ok: true },
     { id: 'a2', at: now - 40 * 60_000, action: 'Started agent', api: 'orca agent launch', target: 'SHOP-142', details: 'claude · fixbug-backlog', space: 'acme.backlog.com', ok: true },

@@ -115,5 +115,13 @@ async function openBrowserTab(url: string, workspace?: { id: string; path?: stri
   await open('active')
 }
 
+/**
+ * Opens a shell terminal in a workspace and shows it. Through the CLI, as agents start: the host
+ * call (`terminal.create`) needs the terminal:send capability, which this plugin does not ask for.
+ */
+async function openTerminal(workspace: { id: string; path?: string }): Promise<void> {
+  await orcaJson(['terminal', 'create', '--worktree', worktreeSelector(workspace.id, workspace.path), '--focus'], 60_000)
+}
+
 /** What the worker launches with; tests swap it to keep the real CLI out. */
-export const cliLauncher = { launchWithPrompt, openBrowserTab }
+export const cliLauncher = { launchWithPrompt, openBrowserTab, openTerminal }

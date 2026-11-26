@@ -43,9 +43,12 @@ export type IssueRun = {
   /** `project / worktree`, as Orca names it now. */
   label: string
   branch: string | null
+  /** `''` for a worktree linked by hand, with no agent started. */
   agent: string
   skill?: string
   startedAt: number
+  /** Linked by hand to the issue, not by starting an agent there. */
+  linked?: boolean
 }
 
 export type AccountSettings = {
@@ -185,7 +188,19 @@ export type PullRequest = {
   author: string | null
   updated: number
   url: string
+  /** The Backlog project, `Name (KEY)`; set where PRs of several projects are listed. */
+  project?: string
 }
+
+/** Backlog's pull request statuses. Only open ones are checked for conflicts. */
+export const PR_OPEN = 1
+
+/** Whether an open pull request would merge into its base cleanly, as git on this computer sees it. */
+export type ConflictCheck =
+  | { state: 'clean' }
+  | { state: 'conflict'; files: string[] }
+  /** No clone of the repository here, git failed, or the PR is not open. */
+  | { state: 'unknown'; reason: string }
 
 /** One change the plugin made, to Backlog or on this computer. */
 export type AuditEntry = {
@@ -295,6 +310,13 @@ declare module 'orca' {
     'issue.get': { input: { key: string }; output: IssueDetail }
     /** Saves changed fields (with the comment, if any), or only adds the comment; answers the issue again. */
     'issue.update': { input: { key: string; changes: IssueChanges }; output: IssueDetail }
+    /** Open pull requests I created, in every project's repositories, newest first. */
+    'pullRequests.mine': { output: PullRequest[] }
+    /**
+     * Merges each open PR (by `PullRequest.key`, from an earlier list) into its base in a clone of
+     * its repository among the Orca workspaces on this computer; only the two branches are fetched.
+     */
+    'pullRequests.conflicts': { input: { keys: string[] }; output: Record<string, ConflictCheck> }
     /** Copies a link to the system clipboard. */
     'link.copy': { input: { url: string }; output: { copied: true } }
     /** Opens a link in a tab of Orca's own browser, in the focused workspace. */
@@ -307,7 +329,11 @@ declare module 'orca' {
     'launch.options': { output: LaunchOptions }
     /** Workspaces agents were started in for an issue, newest first; gone ones are dropped. */
     'runs.get': { input: { key: string }; output: IssueRun[] }
-    /** Shows a workspace in Orca. */
+    /** Links an existing workspace to the issue, so its detail lists it. */
+    'runs.link': { input: { key: string; workspaceId: string }; output: IssueRun[] }
+    /** Forgets a workspace for the issue; the workspace itself stays. */
+    'runs.unlink': { input: { key: string; workspaceId: string }; output: IssueRun[] }
+    /** Shows a workspace in Orca and focuses its terminal, opening one when it has none. */
     'runs.focus': { input: { workspaceId: string }; output: { opened: boolean } }
     /** The first message for an agent: `/skill KEY` with a skill, else a brief of the issue. */
     'launch.prompt': { input: { key: string; agent: string; skill?: string }; output: { prompt: string } }

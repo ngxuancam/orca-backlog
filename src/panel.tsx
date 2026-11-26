@@ -43,6 +43,7 @@ import type {
   Account,
   AccountSettings,
   AuditEntry,
+  ConflictCheck,
   FoundCredential,
   AuthState,
   CertificateStatus,
@@ -56,11 +57,12 @@ import type {
   LaunchOptions,
   Meta,
   Option,
+  PullRequest,
   Session,
   SortKey,
   Subtasking
 } from './protocol'
-import { ATTACHMENT_SCHEME } from './protocol'
+import { ATTACHMENT_SCHEME, PR_OPEN } from './protocol'
 
 // --- State ---------------------------------------------------------------------------------------
 
@@ -147,7 +149,7 @@ const openKey = atom<string | null>('openKey', null, { persist: 'plugin' })
 const trail = atom<string[]>('trail', [], { persist: 'plugin' })
 const detail = atom<{ issue: IssueDetail | null; error: string | null }>({ issue: null, error: null })
 /** Where a result shows: next to the control that asked for it. */
-type Place = 'header' | 'fields' | 'links' | 'pullRequests' | 'attachments' | 'description' | 'comments' | 'launch'
+type Place = 'header' | 'fields' | 'links' | 'pullRequests' | 'myPullRequests' | 'worktrees' | 'attachments' | 'description' | 'comments' | 'launch'
 /** The last action's result, shown inline at its place; a success fades after a few seconds. */
 const notice = atom<{ place: Place; tone: Tone; text: string } | null>(null)
 let noticeTimer: ReturnType<typeof setTimeout> | undefined
@@ -545,11 +547,15 @@ function goTo(next: 'home' | 'issues' | 'settings'): void {
 function goHome(): void {
   goTo('home')
   loadDashboard()
+  void loadMyPrs()
 }
 
 function refresh(): void {
   const now = read(screen)
-  if (now === 'home') loadDashboard()
+  if (now === 'home') {
+    loadDashboard()
+    void loadMyPrs()
+  }
   else if (now === 'issues') void loadIssues()
   else void loadSettings()
 }
@@ -559,6 +565,47 @@ function typeKeyword(keyword: string): void {
   patch(filters, { keyword })
   clearTimeout(keywordTimer)
   keywordTimer = setTimeout(() => void loadIssues(), 350)
+}
+
+// --- Pull requests -------------------------------------------------------------------------------
+
+/** Conflict checks by `PullRequest.key`; kept while the panel is open, redone on each load. */
+const prChecks = atom<Record<string, ConflictCheck | 'checking'>>({})
+/** My open pull requests, for Home. */
+const myPrs = atom<{ prs: PullRequest[] | null; loading: boolean; error: string | null }>({ prs: null, loading: false, error: null })
+
+/** Asks git whether the open ones conflict; the badges show "Checking…" until it answers. */
+async function checkConflicts(prs: PullRequest[]): Promise<void> {
+  const keys = prs.filter((pr) => pr.statusId === PR_OPEN).map((pr) => pr.key)
+  if (!keys.length) return
+  set(prChecks, { ...read(prChecks), ...Object.fromEntries(keys.map((k) => [k, 'checking' as const])) })
+  // One at a time: each fetch can take a while, and a request has two minutes at most.
+  for (const key of keys) {
+    let check: ConflictCheck
+    try {
+      check = (await plugin.request('pullRequests.conflicts', { keys: [key] }, { timeoutMs: 120_000 }))[key] ?? {
+        state: 'unknown',
+        reason: 'No answer for this pull request.'
+      }
+    } catch (error) {
+      check = { state: 'unknown', reason: message(error) }
+    }
+    set(prChecks, { ...read(prChecks), [key]: check })
+  }
+}
+
+let myPrsSeq = 0
+async function loadMyPrs(): Promise<void> {
+  const seq = ++myPrsSeq
+  patch(myPrs, { loading: true, error: null })
+  try {
+    const prs = await plugin.request('pullRequests.mine', undefined, { timeoutMs: 120_000 })
+    if (seq !== myPrsSeq) return
+    set(myPrs, { prs, loading: false, error: null })
+    void checkConflicts(prs)
+  } catch (error) {
+    if (seq === myPrsSeq) patch(myPrs, { loading: false, error: message(error) })
+  }
 }
 
 // --- Session -------------------------------------------------------------------------------------
@@ -697,6 +744,7 @@ async function openIssue(key: string): Promise<void> {
     if (read(openKey) === key) {
       set(detail, { issue, error: null })
       startEditing(issue)
+      void checkConflicts(issue.pullRequests)
     }
   } catch (error) {
     if (read(openKey) === key) set(detail, { issue: null, error: message(error) })
@@ -794,7 +842,20 @@ async function focusRun(workspaceId: string): Promise<void> {
   try {
     await plugin.request('runs.focus', { workspaceId })
   } catch (error) {
-    say('launch', 'danger', message(error))
+    say('worktrees', 'danger', message(error))
+  }
+}
+
+/** The worktree picked to link to the open issue. */
+const linkTarget = atom('')
+
+async function linkRun(key: string, workspaceId: string, how: 'link' | 'unlink'): Promise<void> {
+  try {
+    const runs = await plugin.request(how === 'link' ? 'runs.link' : 'runs.unlink', { key, workspaceId })
+    if (read(openKey) === key) set(issueRuns, { key, runs })
+    if (how === 'link') set(linkTarget, '')
+  } catch (error) {
+    say('worktrees', 'danger', message(error))
   }
 }
 
@@ -1304,6 +1365,44 @@ function ConnectionSettings() {
   )
 }
 
+/** My open pull requests in every project, each with its conflict check. */
+function MyPullRequests() {
+  const { prs, loading, error } = read(myPrs)
+  const checks = read(prChecks)
+  const conflicts = (prs ?? []).filter((pr) => (checks[pr.key] as ConflictCheck | undefined)?.state === 'conflict').length
+  return (
+    <Section title={`My pull requests${prs ? ` (${prs.length})` : ''}`} id="myPullRequests">
+      <Stack gap="sm">
+        <ErrorCallout title="Backlog" text={error} />
+        {conflicts ? (
+          <Text tone="danger" size="sm">
+            {conflicts === 1 ? '1 pull request has conflicts.' : `${conflicts} pull requests have conflicts.`}
+          </Text>
+        ) : null}
+        {!prs ? (
+          loading ? <Spinner label="Loading pull requests" /> : null
+        ) : prs.length ? (
+          prs.map((pr) => (
+            <LinkRow
+              key={pr.key}
+              list="myPullRequests"
+              url={pr.url}
+              check={checks[pr.key]}
+              title={`#${pr.number} ${pr.summary}`}
+              description={`${pr.project ? `${pr.project} · ` : ''}${pr.repo}: ${pr.branch} → ${pr.base}`}
+            />
+          ))
+        ) : (
+          <Text muted size="sm">
+            No open pull request of yours.
+          </Text>
+        )}
+        <Notice place="myPullRequests" />
+      </Stack>
+    </Section>
+  )
+}
+
 function HomeView({ me }: { me: Session }) {
   const projects = read(meta)?.projects
   const d = read(dashboard)
@@ -1322,6 +1421,7 @@ function HomeView({ me }: { me: Session }) {
           </List>
         )}
       </Section>
+      <MyPullRequests />
       <Section title="My Issues" id="myIssues">
         <Stack gap="sm">
           <Segmented
@@ -1700,20 +1800,29 @@ function LinkMenu({ list, url }: { list: Place; url: string }) {
 }
 
 /** A link: left click opens it in the browser; ⋯ opens its menu underneath. */
-function LinkRow(props: { list: 'links' | 'pullRequests'; url: string; title: string; description: string }) {
-  const { list, url, title, description } = props
+function LinkRow(props: {
+  list: 'links' | 'pullRequests' | 'myPullRequests'
+  url: string
+  title: string
+  description: string
+  /** A pull request's conflict check: only a conflict shows. */
+  check?: ConflictCheck | 'checking'
+}) {
+  const { list, url, title, description, check } = props
   const open = isPicked(list, url)
   return (
     <Stack gap="xs">
       <Row gap="xs" align="center">
         <Box grow minWidth={0} gap="none">
           {/* Orca draws a Link as a button, which centres its text when stretched; a Row keeps it at the start. */}
-          <Row gap="none">
+          <Row gap="xs" wrap>
             <Link href={url}>{title}</Link>
+            {check && check !== 'checking' && check.state === 'conflict' ? <Badge tone="danger">Conflict</Badge> : null}
           </Row>
           <Text muted size="xs" truncate>
             {description}
           </Text>
+
         </Box>
         <IconButton
           icon={open ? 'close' : 'more'}
@@ -1770,6 +1879,7 @@ function PullRequests({ issue }: { issue: IssueDetail }) {
               key={pr.key}
               list="pullRequests"
               url={pr.url}
+              check={pr.statusId === PR_OPEN ? read(prChecks)[pr.key] : undefined}
               title={`#${pr.number} ${pr.summary}`}
               description={`${pr.status} · ${pr.repo}: ${pr.branch} → ${pr.base}${pr.author ? ` · ${pr.author}` : ''}`}
             />
@@ -1785,32 +1895,63 @@ function PullRequests({ issue }: { issue: IssueDetail }) {
   )
 }
 
-/** Where agents were started for this issue on this computer; press one to show it. */
+/**
+ * Worktrees of this issue on this computer: where agents were started for it, and ones linked by
+ * hand. Press one to show it with its terminal; a deleted worktree drops off when the issue loads.
+ */
 function Worktrees({ issue }: { issue: IssueDetail }) {
   const r = read(issueRuns)
   const runs = r?.key === issue.key ? r.runs : []
   const agents = read(launchOptions)?.agents ?? []
-  if (!runs.length) return null
+  const linked = new Set(runs.map((run) => `ws:${run.workspaceId}`))
+  const choices = (read(launchOptions)?.targets ?? []).filter((t) => t.value.startsWith('ws:') && !linked.has(t.value))
+  const pick = choices.some((c) => c.value === read(linkTarget)) ? read(linkTarget) : 'none'
   return (
     <Section title={`Worktrees (${runs.length})`} id="worktrees">
-      <List label="Worktrees">
+      <Stack gap="sm">
         {runs.map((run) => (
-          <ListItem
-            key={run.workspaceId}
-            icon="branch"
-            title={run.label}
-            description={[
-              agents.find((a) => a.value === run.agent)?.label ?? run.agent,
-              run.skill,
-              run.branch,
-              `started ${new Date(run.startedAt).toLocaleString()}`
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-            onPress={() => focusRun(run.workspaceId)}
-          />
+          <Row key={run.workspaceId} gap="xs" align="center">
+            <Box grow minWidth={0} gap="none">
+              <Row gap="none">
+                <Link onPress={() => void focusRun(run.workspaceId)}>{run.label}</Link>
+              </Row>
+              <Text muted size="xs" truncate>
+                {[
+                  run.agent ? (agents.find((a) => a.value === run.agent)?.label ?? run.agent) : 'linked',
+                  run.skill,
+                  run.branch,
+                  `${run.agent ? 'started' : 'since'} ${new Date(run.startedAt).toLocaleString()}`
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
+            </Box>
+            <IconButton
+              icon="close"
+              label={`Unlink ${run.label}`}
+              size="sm"
+              variant="ghost"
+              onPress={() => void linkRun(issue.key, run.workspaceId, 'unlink')}
+            />
+          </Row>
         ))}
-      </List>
+        {choices.length ? (
+          <Row gap="xs" align="end">
+            <Box grow minWidth={0}>
+              <Select
+                label="Link a worktree"
+                value={pick}
+                options={[{ value: 'none', label: 'Pick an existing worktree' }, ...choices]}
+                onChange={(v) => set(linkTarget, v)}
+              />
+            </Box>
+            <Button size="sm" icon="link" disabled={pick === 'none'} onPress={() => void linkRun(issue.key, pick.slice(3), 'link')}>
+              Link
+            </Button>
+          </Row>
+        ) : null}
+        <Notice place="worktrees" />
+      </Stack>
     </Section>
   )
 }
