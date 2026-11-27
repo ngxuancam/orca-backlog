@@ -2,17 +2,22 @@
 import { afterEach, assert, mockHost, mountWorker, test } from 'orca/testing'
 import { git, type GitRun } from './git'
 import { cliLauncher } from './orcaCli'
+import { picker } from './pick'
 import * as main from './worker'
 
 const realFetch = globalThis.fetch
 const realLaunch = cliLauncher.launchWithPrompt
 const realGit = git.run
+const realPicker = { ...picker }
+const realCli = { ...cliLauncher }
 const terminals: unknown[] = []
 cliLauncher.openTerminal = async (w) => void terminals.push(w)
 afterEach(() => {
   globalThis.fetch = realFetch
   cliLauncher.launchWithPrompt = realLaunch
   git.run = realGit
+  Object.assign(picker, realPicker)
+  Object.assign(cliLauncher, realCli)
   cliLauncher.openTerminal = async (w) => void terminals.push(w)
   terminals.length = 0
 })
@@ -233,6 +238,183 @@ test('a skill starts as its command; without one the agent gets a brief of the i
   assert.deepEqual(host.callsOf('agent.launch').at(-1), { workspaceId: 'w1', agent: 'claude', prompt: '/fixbug-backlog APP-1' })
   assert.deepEqual(host.callsOf('terminal.focus').at(-1), { terminalId: 't1' })
   assert.deepEqual(worker.refusals, [])
+})
+
+test('asks Backlog AI in a tab of the space, opening one when there is none', async () => {
+  stubBacklog()
+  const tabs = [{ browserPageId: 'other', url: 'https://example.com/', loaded: true }]
+  const evals: { page: string; expression: string }[] = []
+  const shown: string[] = []
+  let answer: unknown = JSON.stringify({ ok: true, threadId: 'th-1', text: 'APP-1 is about login.', tools: ['search-issues-tool'], approval: null })
+  cliLauncher.browserTabs = async () => tabs
+  cliLauncher.createBrowserTab = async (url) => (tabs.push({ browserPageId: 'p1', url, loaded: true }), 'p1')
+  cliLauncher.evalInTab = async (page, expression) => (evals.push({ page, expression }), answer)
+  cliLauncher.showBrowserTab = async (page) => void shown.push(page)
+  const worker = await mountWorker(main, { host: saved() })
+  await worker.request('auth.status')
+  const first = await worker.request('ai.ask', { question: ' Which issues are about login? ' })
+  assert.deepEqual(first, { threadId: 'th-1', text: 'APP-1 is about login.', tools: ['search-issues-tool'], approval: null })
+  // The tab is on the account's space; the question goes in the page script.
+  assert.equal(tabs.at(-1)!.url, 'https://acme.backlog.com/dashboard')
+  assert.equal(evals[0]!.page, 'p1')
+  assert.match(evals[0]!.expression, /"question":"Which issues are about login\?"/)
+  // A follow-up reuses that tab and the thread.
+  await worker.request('ai.ask', { question: 'And the oldest?', threadId: 'th-1' })
+  assert.equal(tabs.length, 2)
+  assert.match(evals[1]!.expression, /"threadId":"th-1"/)
+  // Signed out in Orca's browser: the tab comes forward and the panel is told why.
+  answer = JSON.stringify({ ok: false, reason: 'login', status: 200 })
+  await assert.rejects(worker.request('ai.ask', { question: 'Again' }), /Log in to acme\.backlog\.com in Orca's browser/)
+  assert.deepEqual(shown, ['p1'])
+  await assert.rejects(worker.request('ai.ask', { question: '   ' }), /Type a question/)
+  const log = await worker.request('audit.list')
+  assert.equal(log.filter((e) => e.action === 'Asked Backlog AI').length, 3)
+  assert.deepEqual(worker.refusals, [])
+})
+
+test('Backlog AI: availability is remembered; history and a chat come from the space tab', async () => {
+  stubBacklog()
+  let status = JSON.stringify({ state: 'available' })
+  let fetched: unknown = '[]'
+  const evals: string[] = []
+  cliLauncher.browserTabs = async () => [{ browserPageId: 'p1', url: 'https://acme.backlog.com/dashboard', loaded: true }]
+  cliLauncher.evalInTab = async (_page, expression) => (evals.push(expression), expression.includes('chat-ui-loader') ? status : fetched)
+  cliLauncher.showBrowserTab = async () => undefined
+  const worker = await mountWorker(main, { host: saved() })
+  await worker.request('auth.status')
+  assert.deepEqual(await worker.request('ai.status', {}), { state: 'available' })
+  status = JSON.stringify({ state: 'unavailable' })
+  // Remembered: the page is not read again until a recheck.
+  assert.deepEqual(await worker.request('ai.status', {}), { state: 'available' })
+  assert.deepEqual(await worker.request('ai.status', { recheck: true }), { state: 'unavailable' })
+  // Signed out says nothing about the plan.
+  status = JSON.stringify({ state: 'signedOut' })
+  assert.deepEqual(await worker.request('ai.status', { recheck: true }), { state: 'signedOut' })
+
+  fetched = JSON.stringify([
+    { status: 200, json: [{ id: 't1', title: 'Login bugs', updatedAt: '2026-11-20T00:00:00Z' }] },
+    { status: 200, json: { availability: 'available', usagePercentage: 0.2 } }
+  ])
+  const history = await worker.request('ai.history')
+  assert.deepEqual(history, { threads: [{ id: 't1', title: 'Login bugs', updated: Date.parse('2026-11-20T00:00:00Z') }], usage: { state: 'available', percent: 20 } })
+  fetched = JSON.stringify([{ status: 200, json: { messages: [{ role: 'assistant', parts: [{ type: 'text', text: 'Hi' }] }, { role: 'user', parts: [{ type: 'text', text: 'hello' }] }] } }])
+  const chat = await worker.request('ai.thread', { threadId: 't1' })
+  assert.deepEqual(chat.turns.map((t) => [t.question, t.answer.text]), [['hello', 'Hi']])
+  assert.match(evals.at(-1)!, /memory\/threads\/t1\/messages\?agentId=ai-assistant/)
+  fetched = JSON.stringify([{ status: 401, json: null }])
+  await assert.rejects(worker.request('ai.thread', { threadId: 't1' }), /Log in to acme\.backlog\.com/)
+  assert.deepEqual(worker.refusals, [])
+})
+
+test('the web panel hands over pasted bytes and reads images to show inline', async () => {
+  stubBacklog()
+  const stubbed = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL, init?: RequestInit) =>
+    new URL(String(input)).pathname === '/api/v2/issues/APP-1/attachments/5'
+      ? new Response(new Uint8Array([137, 80, 78, 71]), { status: 200 })
+      : stubbed(input, init)) as typeof fetch
+  const worker = await mountWorker(main, { host: saved() })
+  await worker.request('auth.status')
+  const put = await worker.request('files.put', { name: '../../evil/paste.png', data: Buffer.from('png').toString('base64') })
+  // The name loses any folder part; the file waits like a pasted one.
+  assert.deepEqual([put.name, put.size, put.kind], ['paste.png', 3, 'image'])
+  await assert.rejects(worker.request('files.put', { name: 'empty.png', data: '' }), /empty/)
+  assert.deepEqual(await worker.request('files.drop', { ids: [put.id] }), { dropped: 1 })
+  // shot.png is attachment 5 of APP-1 in the stub.
+  assert.deepEqual(await worker.request('attachment.data', { key: 'APP-1', attachmentId: 5 }), { mime: 'image/png', data: Buffer.from([137, 80, 78, 71]).toString('base64') })
+  await assert.rejects(worker.request('attachment.data', { key: 'APP-1', attachmentId: 99 }), /has no attachment 99/)
+  assert.deepEqual(worker.refusals, [])
+})
+
+test('assigns a pull request it listed, and serves user icons once each', async () => {
+  const pr = { id: 1, number: 7, summary: 'Fix login', branch: 'fix', base: 'main', status: { id: 1, name: 'Open' }, createdUser: null, assignee: { id: 7, name: 'Me' }, issue: { id: 1, issueKey: 'APP-1' }, updated: issue.updated }
+  stubBacklog({
+    '/api/v2/projects/10/git/repositories': [{ id: 5, name: 'app' }],
+    '/api/v2/projects/10/git/repositories/5/pullRequests': [pr],
+    '/api/v2/projects/10/git/repositories/5/pullRequests/7': pr
+  })
+  const stubbed = globalThis.fetch
+  let iconCalls = 0
+  globalThis.fetch = (async (input: string | URL, init?: RequestInit) =>
+    new URL(String(input)).pathname === '/api/v2/users/7/icon'
+      ? (iconCalls++, new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'image/png' } }))
+      : stubbed(input, init)) as typeof fetch
+  writes.length = 0
+  const worker = await mountWorker(main, { host: saved() })
+  await worker.request('auth.status')
+  const [listed] = (await worker.request('issue.get', { key: 'APP-1' })).pullRequests
+  assert.deepEqual([listed!.assignee, listed!.assigneeId, listed!.issueKey, listed!.projectId], ['Me', 7, 'APP-1', 10])
+  await worker.request('pullRequest.assign', { key: listed!.key, assigneeId: 11 })
+  assert.deepEqual(writes.at(-1), { method: 'PATCH', path: '/api/v2/projects/10/git/repositories/5/pullRequests/7', form: 'assigneeId=11' })
+  await assert.rejects(worker.request('pullRequest.assign', { key: '9-9', assigneeId: 1 }), /not known yet/)
+  const icon = await worker.request('user.icon', { userId: 7 })
+  await worker.request('user.icon', { userId: 7 })
+  assert.deepEqual(icon, { mime: 'image/png', data: Buffer.from([1, 2, 3]).toString('base64') })
+  assert.equal(iconCalls, 1)
+  assert.equal((await worker.request('audit.list'))[0]!.action, 'Assigned pull request')
+  assert.deepEqual(worker.refusals, [])
+})
+
+test('images in a comment follow the project formatting; other files only attach', () => {
+  assert.equal(main.withFiles('See', ['a.png', 'b.pdf'], 'markdown'), 'See\n\n![image][a.png]')
+  assert.equal(main.withFiles('', ['a.png', 'c.jpg'], 'backlog'), '#image(a.png)\n#image(c.jpg)')
+  assert.equal(main.withFiles(' ', ['b.pdf'], 'markdown'), 'Attached b.pdf')
+})
+
+test('uploads pasted and chosen files, then comments with their ids; the pasted copy is deleted', async () => {
+  const { mkdtempSync, writeFileSync, existsSync, rmSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(join(tmpdir(), 'bt-files-'))
+  try {
+    const shot = join(dir, 'paste-1.png')
+    const log = join(dir, 'log.txt')
+    writeFileSync(shot, 'png')
+    writeFileSync(log, 'hello')
+    picker.paste = async () => ({ image: shot })
+    picker.choose = async () => [log]
+    stubBacklog({ '/api/v2/projects/APP': { id: 10, projectKey: 'APP', textFormattingRule: 'markdown' } })
+    const stubbed = globalThis.fetch
+    const uploaded: string[] = []
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      if (new URL(String(input)).pathname === '/api/v2/space/attachment') {
+        const file = (init!.body as FormData).get('file') as File
+        uploaded.push(`${file.name}:${await file.text()}`)
+        return new Response(JSON.stringify({ id: 30 + uploaded.length, name: file.name, size: file.size }), { status: 200 })
+      }
+      return stubbed(input, init)
+    }) as typeof fetch
+    writes.length = 0
+    const worker = await mountWorker(main, { host: saved() })
+    await worker.request('auth.status')
+    const pasted = await worker.request('files.paste')
+    assert.deepEqual(pasted.files.map((f) => [f.name, f.size, f.kind]), [['paste-1.png', 3, 'image']])
+    const chosen = await worker.request('files.choose')
+    assert.deepEqual(chosen.map((f) => [f.name, f.kind]), [['log.txt', 'file']])
+    await worker.request('issue.update', { key: 'APP-1', changes: { comment: 'Screenshot', files: [pasted.files[0]!.id, chosen[0]!.id] } })
+    assert.deepEqual(uploaded, ['paste-1.png:png', 'log.txt:hello'])
+    assert.deepEqual(writes, [
+      {
+        method: 'POST',
+        path: '/api/v2/issues/APP-1/comments',
+        form: `content=${new URLSearchParams({ c: 'Screenshot\n\n![image][paste-1.png]' }).toString().slice(2)}&attachmentId%5B%5D=31&attachmentId%5B%5D=32`
+      }
+    ])
+    // The pasted copy is gone; the chosen file is the person's own and stays.
+    assert.equal(existsSync(shot), false)
+    assert.equal(existsSync(log), true)
+    const [entry] = await worker.request('audit.list')
+    assert.equal(entry!.api, 'POST /api/v2/space/attachment, POST /api/v2/issues/APP-1/comments')
+    assert.match(entry!.details ?? "", /attached paste-1\.png, log\.txt/)
+    // A file the worker no longer holds (it restarted) is refused before anything is sent.
+    await assert.rejects(worker.request('issue.update', { key: 'APP-1', changes: { files: ['file-9'] } }), /no longer waiting/)
+    // Nothing on the clipboard says why.
+    picker.paste = async () => ({ none: 'The clipboard holds no image.' })
+    assert.deepEqual(await worker.request('files.paste'), { files: [], message: 'The clipboard holds no image.' })
+    assert.deepEqual(worker.refusals, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('saves changed fields with the comment, or posts the comment alone', async () => {

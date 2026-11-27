@@ -5,7 +5,7 @@
 **Your Nulab Backlog issues in Orca's sidebar.**<br>
 Find the ticket, read it, and hand it to an agent without leaving your workspace.
 
-[![Version](https://img.shields.io/badge/version-v0.3.11-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
+[![Version](https://img.shields.io/badge/version-v0.3.12-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
@@ -104,6 +104,12 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
 
 ## Tips
 
+- **Two panels.** *Backlog Tasks* is a web page laid out like Backlog itself: right-click (or ⋯)
+  any issue, pull request, link, worktree, comment or attachment for its actions; drag a column's
+  edge to size it (double-click for the default); every dropdown has a search box (accents and
+  case ignored); images in descriptions and comments show inline as they scroll into view; paste
+  (Ctrl+V) or drop images straight into a comment. *Backlog Tasks (classic)* is the earlier panel
+  drawn with Orca's own controls, kept while the new one settles.
 - **Already use [backlog-mcp-server](https://github.com/nulab/backlog-mcp-server)?** The Connect
   screen lists every `BACKLOG_DOMAIN` / `BACKLOG_API_KEY` entry it finds (Claude, Cursor, Windsurf,
   Gemini, Codex, VS Code, and the workspace's `.mcp.json`); press one to sign in. Keys stay in the
@@ -122,6 +128,20 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
   description into fields in place. The **Update issue** bar pinned at the bottom opens upward with
   a comment box and status, assignee, priority, type, category, milestone, dates and hours. Each
   save sends only what changed, with the comment, as Backlog records it.
+- **Backlog AI**: when your space has the Backlog AI Assistant (Premium plan and above, turned on
+  by an administrator), the 🤖 button at the top opens a chat screen laid out like Backlog's own:
+  ask anything ("find the issues about…", "summarise APP-12"), follow up in the same chat, start a
+  **New chat**, or open the **Chat history** (searchable) to continue an earlier one. It warns when
+  the month's AI credit is nearly used. Spaces without the assistant don't show the button.
+  Backlog has no API for it, so the plugin uses its web chat in a tab of Orca's browser signed in
+  to your space (sign in there once; the plugin never reads the session). It is unofficial: a
+  Backlog release can break it, while the web chat keeps working. Changes the assistant proposes
+  (adding or updating issues) are approved on the web: **Open in Backlog**.
+- **Images in a comment**: under the comment box, **Paste image** attaches the image on the
+  clipboard (a screenshot; on Windows, files copied in Explorer too) and **Attach file…** opens the
+  system's file dialog. Images are uploaded with the comment and shown in it (`![image][name]`, or
+  `#image(name)` in a Backlog-notation project); other files are attached. On Linux, pasting needs
+  `wl-clipboard` or `xclip`, and the dialog `zenity` or `kdialog`.
 - **Columns** (above each issue table) picks which fields it shows, like Backlog's own column
   setting: assignee, registered by, dates, category, milestone, version, hours… **Widths** beside
   it sizes each shown column (XS to L, or Fill). The picked columns stay; widths last until you
@@ -159,8 +179,9 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
 ## Develop
 
 ```sh
-npm i                      # typings only; nothing here ships in the plugin
-npx tsc -p .
+npm i                      # typings and the web panel's libraries
+npm run typecheck          # the worker and classic panel, then the web panel
+npm run build:web          # src/web -> dist/web
 orca plugin test . --json
 orca plugin check . --json
 orca plugin dev watch . --check --json
@@ -169,13 +190,21 @@ orca plugin dev watch . --check --json
 | File              | Role                                                         |
 | ----------------- | ------------------------------------------------------------ |
 | `src/protocol.ts` | Panel ↔ worker contract                                      |
-| `src/panel.tsx`   | The sidebar panel (Orca components, no build step)           |
+| `src/web/`        | The main panel: a web page (Preact), built into `dist/web`   |
+| `src/panel.tsx`   | The classic panel (Orca components, no build step)           |
 | `src/worker.ts`   | Request handlers                                             |
 | `src/backlog.ts`  | Backlog API client and credential discovery                  |
 | `src/accounts.ts` | Saved accounts and the account of each Orca project          |
 | `src/inline.ts`   | Backlog text to Markdown, image references to previews       |
 | `src/files.ts`    | Saving attachments, revealing and opening files              |
 | `src/orcaCli.ts`  | Installed agents and skills, as Orca lists them              |
+
+The main panel is compiled, because Orca's own transpiler targets its components: after changing
+`src/web`, run `npm run build:web` and commit `dist/` with it (Orca installs without a build step).
+Preact, marked and DOMPurify are copied into `dist/web/vendor` from `node_modules` (their licenses
+in `LICENSES.txt`). To look at it with mock data only, run `node scripts/preview-web.mjs` and open
+`http://localhost:5179/web/preview.html#home` (or `#issues`, `#detail`, `#ai`, `#settings`,
+`#signedOut`; add `&dark`).
 
 To release, run `npm run set-version X.Y.Z` (it sets the manifest, `package.json` and the README
 badge), merge, then push a `vX.Y.Z` tag: a workflow attaches the archives and checksums to the GitHub release, and the

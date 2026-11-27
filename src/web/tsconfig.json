@@ -1,0 +1,33 @@
+{
+  "extends": "../../.orca/types/tsconfig.json",
+  "include": [
+    "."
+  ],
+  "compilerOptions": {
+    "jsx": "react",
+    "jsxFactory": "h",
+    "jsxFragmentFactory": "Fragment",
+    "typeRoots": [
+      "../../.orca/types",
+      "../../node_modules/@types"
+    ],
+    "types": [
+      "orca",
+      "orca-host",
+      "orca-frame",
+      "orca-services"
+    ],
+    "jsxImportSource": null,
+    "noEmit": false,
+    "outDir": "../../dist",
+    "rootDir": "..",
+    "allowImportingTsExtensions": false,
+    "declaration": false,
+    "sourceMap": false,
+    "removeComments": false
+  },
+  "exclude": [
+    "vendor/*.js",
+    "**/*.test.ts"
+  ]
+}
