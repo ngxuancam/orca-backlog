@@ -320,7 +320,7 @@ function UpdateBar({ issue }) {
         h("div", { class: "update-bar" },
             h(IconButton, { icon: "clip", label: "Attach files to a comment", class: "bar-clip", onClick: () => {
                     open();
-                    void app.addFiles(issue, 'choose');
+                    void app.addFiles(issue);
                 } }),
             h("button", { type: "button", class: "fake-input", onClick: open }, form.comment.trim() ? form.comment : 'Write a comment…'),
             h(Button, { size: "sm", icon: "edit", onClick: open }, pending ? `Change Status (${pending})` : 'Change Status')),
@@ -368,7 +368,7 @@ function UpdateForm({ issue }) {
                 }
             } }),
         h("div", { class: "row" },
-            h(Button, { size: "sm", variant: "ghost", icon: "clip", disabled: s.picking, onClick: () => void app.addFiles(issue, 'choose') }, "Attach file\u2026"),
+            h(Button, { size: "sm", variant: "ghost", icon: "clip", disabled: s.picking, onClick: () => void app.addFiles(issue) }, "Attach file\u2026"),
             s.picking ? h(Spinner, { label: "Waiting for the files" }) : null),
         form.files.length ? (h("div", { class: "file-chips" }, form.files.map((file) => (h("span", { key: file.id, class: "chip", title: file.kind === 'image' ? 'Shown in the comment' : 'Attached' },
             h(Icon, { name: file.kind === 'image' ? 'image' : 'file', size: 14 }),

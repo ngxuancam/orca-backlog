@@ -869,13 +869,6 @@ ${urls.join(' ')}`
     }
   }
 
-  orca.panels.handle('files.paste', async () => {
-    const got = await picker.paste()
-    if ('none' in got) return { files: [], message: got.none }
-    if ('image' in got) return { files: [await hold(got.image, true)] }
-    return { files: await Promise.all(got.files.map((path) => hold(path, false))) }
-  })
-
   orca.panels.handle('files.choose', async () =>
     Promise.all((await picker.choose('Attach to the Backlog comment')).map((path) => hold(path, false)))
   )

@@ -1,8 +1,7 @@
-// Files for a comment. The panel has no file input, paste or drop, so the worker asks the OS:
-// an image on the clipboard (a screenshot) or files chosen in the OS's open dialog.
+// Files for a comment chosen in the OS's open dialog (Attach file…). Pasted and dropped images
+// come from the panel itself (`files.put`).
 
 import { spawn } from 'node:child_process'
-import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -48,68 +47,8 @@ const lines = (b: Buffer) =>
     .map((l) => l.trim())
     .filter(Boolean)
 
-/** Where pasted images wait until the comment is sent. */
+/** Where pasted and dropped images wait until the comment is sent. */
 export const pasteFolder = () => join(tmpdir(), 'orca-backlog-tasks', 'paste')
-
-/** `20261127-103045123`: to the millisecond, so two pastes never share a name. */
-const stamp = () => new Date().toISOString().replace(/[-:.]/g, '').replace('T', '-').slice(0, 18)
-
-export type Pasted = { image: string } | { files: string[] } | { none: string }
-
-/**
- * The clipboard's image, saved as `paste-<time>.png`; or the files copied in the file manager
- * (Windows). `none` says why there is nothing to attach.
- */
-export async function pasteFromClipboard(): Promise<Pasted> {
-  await mkdir(pasteFolder(), { recursive: true })
-  const path = join(pasteFolder(), `paste-${stamp()}.png`)
-  if (process.platform === 'win32') {
-    const r = await powershell(
-      [
-        `$files = [System.Windows.Forms.Clipboard]::GetFileDropList()`,
-        `if ($files.Count -gt 0) { 'files'; $files; exit 0 }`,
-        `$image = [System.Windows.Forms.Clipboard]::GetImage()`,
-        `if ($image -eq $null) { exit 3 }`,
-        `$image.Save(${psQuote(path)}, [System.Drawing.Imaging.ImageFormat]::Png); 'image'`
-      ].join('; ')
-    )
-    if (r === 'missing') return { none: 'PowerShell is not available.' }
-    if (r.code === 3) return { none: 'The clipboard holds no image. Take a screenshot or copy an image first.' }
-    if (r.code !== 0) throw new Error(`Cannot read the clipboard: ${r.stderr.split('\n')[0] || `exit ${r.code}`}`)
-    const [kind, ...rest] = lines(r.stdout)
-    return kind === 'files' ? { files: rest } : { image: path }
-  }
-  if (process.platform === 'darwin') {
-    const r = await run('osascript', [
-      '-e', 'on run argv',
-      '-e', 'try',
-      '-e', 'set png to (the clipboard as «class PNGf»)',
-      '-e', 'on error',
-      '-e', 'return "none"',
-      '-e', 'end try',
-      '-e', 'set f to open for access (POSIX file (item 1 of argv)) with write permission',
-      '-e', 'write png to f',
-      '-e', 'close access f',
-      '-e', 'return "image"',
-      '-e', 'end run',
-      path
-    ])
-    if (r === 'missing') return { none: 'osascript is not available.' }
-    if (r.code !== 0) throw new Error(`Cannot read the clipboard: ${r.stderr || `exit ${r.code}`}`)
-    return String(r.stdout).trim() === 'image' ? { image: path } : { none: 'The clipboard holds no image. Take a screenshot or copy an image first.' }
-  }
-  for (const [command, args] of [
-    ['wl-paste', ['--no-newline', '--type', 'image/png']],
-    ['xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o']]
-  ] as [string, string[]][]) {
-    const r = await run(command, args, 15_000)
-    if (r === 'missing') continue
-    if (r.code !== 0 || !r.stdout.length) return { none: 'The clipboard holds no image. Take a screenshot or copy an image first.' }
-    await writeFile(path, r.stdout)
-    return { image: path }
-  }
-  return { none: 'Install wl-clipboard or xclip to paste images.' }
-}
 
 /** Files chosen in the OS's open dialog; empty when the person cancels. */
 export async function chooseFiles(title: string): Promise<string[]> {
@@ -160,4 +99,4 @@ export async function chooseFiles(title: string): Promise<string[]> {
 }
 
 /** What the worker calls; tests swap it. */
-export const picker = { paste: pasteFromClipboard, choose: chooseFiles }
+export const picker = { choose: chooseFiles }

@@ -1,4 +1,4 @@
-// The panel <-> worker contract, declared once: src/panel.tsx and src/worker.ts both read it.
+// The panel <-> worker contract, declared once: src/web (the panel) and src/worker.ts both read it.
 
 /** A choice; `color` (`#rrggbb`) for statuses and issue types, drawn as a dot like Backlog's. */
 export type Option = { value: string; label: string; color?: string }
@@ -360,8 +360,6 @@ declare module 'orca' {
     'ai.thread': { input: { threadId: string }; output: { turns: { question: string; answer: AiAnswer }[]; more: boolean } }
     /** Copies an answer to the system clipboard. */
     'ai.copy': { input: { text: string }; output: { copied: true } }
-    /** The clipboard's image (or files copied in the file manager), waiting for the next comment. */
-    'files.paste': { output: { files: PendingFile[]; message?: string } }
     /** A file the panel already has (pasted or dropped), as base64; it waits for the next comment. */
     'files.put': { input: { name: string; data: string }; output: PendingFile }
     /** Files chosen in the OS's open dialog (none when cancelled), waiting for the next comment. */

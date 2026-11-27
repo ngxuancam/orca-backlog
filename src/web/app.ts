@@ -1,6 +1,5 @@
-// The web panel's state and every action it takes: what src/panel.tsx does with atoms, here on
-// one store. No DOM and no Preact: the views (src/web/*.tsx) read `app.state` and call these, and
-// tests drive them in Node with a fake host.
+// The panel's state and every action it takes, on one store. No DOM and no Preact: the views
+// (src/web/*.tsx) read `app.state` and call these, and tests drive them in Node with a fake host.
 import type {
   Account,
   AccountSettings,
@@ -907,15 +906,12 @@ export class App {
     }
   }
 
-  /** Files for the comment: pasted in the box (`data`), the clipboard through the OS, or chosen. */
-  async addFiles(issue: IssueDetail, how: 'paste' | 'choose'): Promise<void> {
+  /** Files for the comment chosen in the OS's open dialog (pasted and dropped ones: `putFiles`). */
+  async addFiles(issue: IssueDetail): Promise<void> {
     if (this.state.picking) return
     this.set({ picking: true })
     try {
-      const got: { files: PendingFile[]; message?: string } =
-        how === 'paste'
-          ? await this.host.request('files.paste', undefined, { timeoutMs: 60_000 })
-          : { files: await this.host.request('files.choose', undefined, { timeoutMs: 120_000 }) }
+      const got: { files: PendingFile[]; message?: string } = { files: await this.host.request('files.choose', undefined, { timeoutMs: 120_000 }) }
       const form = this.state.editing
       if (!form || form.key !== issue.key) {
         if (got.files.length) void this.host.request('files.drop', { ids: got.files.map((f) => f.id) }).catch(() => undefined)

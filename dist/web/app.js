@@ -735,15 +735,13 @@ export class App {
             this.set({ saving: false });
         }
     }
-    /** Files for the comment: pasted in the box (`data`), the clipboard through the OS, or chosen. */
-    async addFiles(issue, how) {
+    /** Files for the comment chosen in the OS's open dialog (pasted and dropped ones: `putFiles`). */
+    async addFiles(issue) {
         if (this.state.picking)
             return;
         this.set({ picking: true });
         try {
-            const got = how === 'paste'
-                ? await this.host.request('files.paste', undefined, { timeoutMs: 60_000 })
-                : { files: await this.host.request('files.choose', undefined, { timeoutMs: 120_000 }) };
+            const got = { files: await this.host.request('files.choose', undefined, { timeoutMs: 120_000 }) };
             const form = this.state.editing;
             if (!form || form.key !== issue.key) {
                 if (got.files.length)

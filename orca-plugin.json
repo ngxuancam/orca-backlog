@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "backlog-tasks",
   "name": "Backlog Tasks",
-  "version": "0.3.13",
+  "version": "0.3.14",
   "description": "Nulab Backlog in Orca: your issues, filters, details with linked issues and pull requests, attachments, and one-click hand-off to an agent with a skill.",
   "author": {
     "name": "ngxuancam",
@@ -47,17 +47,10 @@
   "contributes": {
     "panels": [
       {
-        "id": "backlog",
+        "id": "backlog-tasks",
         "title": "Backlog Tasks",
         "icon": "layers",
         "entry": "dist/web/index.html"
-      },
-      {
-        "id": "backlog-tasks",
-        "title": "Backlog Tasks (classic)",
-        "icon": "blocks",
-        "entry": "src/panel.tsx",
-        "ui": "components"
       }
     ],
     "commands": [

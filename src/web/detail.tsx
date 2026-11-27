@@ -543,7 +543,7 @@ function UpdateBar({ issue }: { issue: IssueDetail }) {
           class="bar-clip"
           onClick={() => {
             open()
-            void app.addFiles(issue, 'choose')
+            void app.addFiles(issue)
           }}
         />
         <button type="button" class="fake-input" onClick={open}>
@@ -624,7 +624,7 @@ function UpdateForm({ issue }: { issue: IssueDetail }) {
         }}
       />
       <div class="row">
-        <Button size="sm" variant="ghost" icon="clip" disabled={s.picking} onClick={() => void app.addFiles(issue, 'choose')}>
+        <Button size="sm" variant="ghost" icon="clip" disabled={s.picking} onClick={() => void app.addFiles(issue)}>
           Attach file…
         </Button>
         {s.picking ? <Spinner label="Waiting for the files" /> : null}
