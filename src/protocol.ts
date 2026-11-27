@@ -393,6 +393,8 @@ declare module 'orca' {
     'user.icon': { input: { userId: number }; output: { mime: string; data: string } }
     /** Sets the assignee of a pull request (by `PullRequest.key`, from an earlier list); `null` clears it. */
     'pullRequest.assign': { input: { key: string; assigneeId: number | null }; output: { ok: true } }
+    /** Asks GitHub for a newer release now; the status bar item shows it when there is one. */
+    'update.check': { output: { installed: string; newer: { version: string; url: string } | null } }
     'launch.options': { output: LaunchOptions }
     /** Workspaces agents were started in for an issue, newest first; gone ones are dropped. */
     'runs.get': { input: { key: string }; output: IssueRun[] }

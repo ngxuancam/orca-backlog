@@ -120,7 +120,8 @@ const stored: Record<string, unknown> = {
     issues: { screen: 'issues', openKey: null, advancedOpen: true, filters: { projectId: '10' } },
     detail: { screen: 'home', openKey: 'SHOP-142' },
     ai: { screen: 'ai', openKey: null },
-    settings: { screen: 'settings', openKey: null },
+    // Accounts, the audit log and the account per Orca project in view.
+    settings: { screen: 'settings', openKey: null, closedSections: ['settings.add', 'settings.connection'] },
     signedOut: {}
   }[screen]
 }

@@ -3,6 +3,7 @@ import { afterEach, assert, mockHost, mountWorker, test } from 'orca/testing'
 import { git, type GitRun } from './git'
 import { cliLauncher } from './orcaCli'
 import { picker } from './pick'
+import { updateSource } from './updates'
 import * as main from './worker'
 
 const realFetch = globalThis.fetch
@@ -10,6 +11,7 @@ const realLaunch = cliLauncher.launchWithPrompt
 const realGit = git.run
 const realPicker = { ...picker }
 const realCli = { ...cliLauncher }
+const realUpdates = { ...updateSource }
 const terminals: unknown[] = []
 cliLauncher.openTerminal = async (w) => void terminals.push(w)
 afterEach(() => {
@@ -18,6 +20,7 @@ afterEach(() => {
   git.run = realGit
   Object.assign(picker, realPicker)
   Object.assign(cliLauncher, realCli)
+  Object.assign(updateSource, realUpdates)
   cliLauncher.openTerminal = async (w) => void terminals.push(w)
   terminals.length = 0
 })
@@ -352,6 +355,35 @@ test('assigns a pull request it listed, and serves user icons once each', async 
   assert.deepEqual(icon, { mime: 'image/png', data: Buffer.from([1, 2, 3]).toString('base64') })
   assert.equal(iconCalls, 1)
   assert.equal((await worker.request('audit.list'))[0]!.action, 'Assigned pull request')
+  assert.deepEqual(worker.refusals, [])
+})
+
+test('the update item shows only when GitHub has a newer release; pressing it opens the notes', async () => {
+  stubBacklog()
+  const version = JSON.parse((await import('node:fs')).readFileSync('orca-plugin.json', 'utf8')).version as string
+  const [major, minor, patch] = version.split('.').map(Number) as [number, number, number]
+  let latest: { version: string; url: string } | null = { version: `${major}.${minor}.${patch + 1}`, url: 'https://github.com/ngxuancam/orca-backlog/releases/tag/next' }
+  updateSource.latest = async () => latest
+  const opened: string[] = []
+  cliLauncher.openBrowserTab = async (url) => void opened.push(url)
+  const host = saved()
+  const worker = await mountWorker(main, { host })
+  // Hidden from the start.
+  assert.deepEqual(host.callsOf('statusBar.update')[0], { id: 'update', visible: false })
+  const found = await worker.request('update.check')
+  assert.deepEqual(found, { installed: version, newer: latest })
+  assert.deepEqual(host.callsOf('statusBar.update').at(-1), {
+    id: 'update',
+    visible: true,
+    text: `Backlog Tasks v${latest!.version}`,
+    tooltip: `Backlog Tasks v${latest!.version} is out (you have v${version}). Press to see what is new.`
+  })
+  assert.match(String(await worker.command('backlog-tasks.openUpdate')), /release notes are open/)
+  assert.deepEqual(opened, ['https://github.com/ngxuancam/orca-backlog/releases/tag/next'])
+  // The same version, or none: hidden again.
+  latest = { version, url: 'x' }
+  assert.equal((await worker.request('update.check')).newer, null)
+  assert.deepEqual(host.callsOf('statusBar.update').at(-1), { id: 'update', visible: false })
   assert.deepEqual(worker.refusals, [])
 })
 

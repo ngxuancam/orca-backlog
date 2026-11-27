@@ -1,0 +1,213 @@
+<!doctype html>
+<!--
+  The store images (assets/store/*.png), 1600×1000, composed from the panel shots in assets/
+  (themselves taken from the mock preview: fictional data only). Served by scripts/preview-web.mjs
+  at /store/compose.html?kind=cover|home|detail|ai|settings; scripts/capture-store.mjs shoots them.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1600px;
+        height: 1000px;
+        overflow: hidden;
+      }
+      body {
+        font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        color: #eef3f1;
+        background:
+          radial-gradient(900px 600px at 0% 0%, rgba(76, 175, 147, 0.2), transparent 60%),
+          radial-gradient(700px 500px at 100% 100%, rgba(76, 175, 147, 0.14), transparent 60%),
+          linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px) 0 0 / 40px 40px,
+          linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px) 0 0 / 40px 40px,
+          #0d1413;
+        position: relative;
+      }
+      .icon {
+        width: 72px;
+        height: 72px;
+        border-radius: 18px;
+        box-shadow: 0 10px 40px rgba(76, 175, 147, 0.35);
+      }
+      .shot {
+        display: block;
+        border-radius: 14px;
+        box-shadow:
+          0 30px 80px rgba(0, 0, 0, 0.55),
+          0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+      /* Cover */
+      .cover-text {
+        position: absolute;
+        left: 96px;
+        top: 150px;
+        width: 680px;
+      }
+      .eyebrow {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        font-size: 30px;
+        color: #a8bdb6;
+      }
+      h1 {
+        margin: 54px 0 0;
+        font-size: 84px;
+        line-height: 1;
+        letter-spacing: -2px;
+        font-weight: 800;
+      }
+      h1 em {
+        font-style: normal;
+        color: #5fd0ab;
+      }
+      .lead {
+        margin: 34px 0 0;
+        font-size: 30px;
+        line-height: 1.45;
+        color: #a8bdb6;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        margin-top: 46px;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 22px;
+        border-radius: 30px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+        font-size: 24px;
+      }
+      .chip::before {
+        content: '';
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #4caf93;
+      }
+      .stage {
+        position: absolute;
+        right: 40px;
+        top: 70px;
+        width: 800px;
+        height: 860px;
+        perspective: 1800px;
+      }
+      .stage .back {
+        position: absolute;
+        right: 10px;
+        top: 0;
+        width: 420px;
+        transform: rotateY(-14deg) rotateZ(2deg);
+      }
+      .stage .front {
+        position: absolute;
+        left: 0;
+        top: 120px;
+        width: 450px;
+        transform: rotateY(-14deg) rotateZ(-2deg);
+      }
+      /* Feature pages */
+      .head {
+        position: absolute;
+        left: 96px;
+        top: 92px;
+        right: 96px;
+        display: flex;
+        gap: 28px;
+        align-items: flex-start;
+      }
+      .head .icon {
+        width: 60px;
+        height: 60px;
+        border-radius: 15px;
+        margin-top: 8px;
+      }
+      h2 {
+        margin: 0;
+        font-size: 50px;
+        font-weight: 800;
+        letter-spacing: -1px;
+      }
+      .sub {
+        margin: 10px 0 0;
+        font-size: 26px;
+        color: #a8bdb6;
+      }
+      .pair {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 250px;
+        bottom: 50px;
+        display: flex;
+        justify-content: center;
+        gap: 56px;
+      }
+      .pair figure {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 22px;
+      }
+      .pair .shot {
+        max-height: 610px;
+        max-width: 620px;
+        width: auto;
+      }
+      figcaption {
+        font-size: 18px;
+        letter-spacing: 5px;
+        color: #8fa39c;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="page"></div>
+    <script>
+      const kind = new URLSearchParams(location.search).get('kind') || 'cover'
+      const icon = '/assets/icon.png'
+      const pages = {
+        home: ['Your dashboard, like Backlog', 'Projects, your pull requests (conflicts flagged), and My Issues with due-date tabs.', 'home'],
+        detail: ['Everything about an issue', "Laid out like Backlog's: properties, inline images, pull requests, worktrees, comments.", 'detail'],
+        ai: ['Backlog AI, in the panel', 'Ask about your issues and keep the chat history, when your space has the assistant.', 'ai'],
+        settings: ['Several accounts, one per project', 'Switch account in the panel; each Orca project remembers its own. Every change is logged.', 'settings']
+      }
+      const page = document.getElementById('page')
+      if (kind === 'cover') {
+        page.innerHTML = `
+          <div class="cover-text">
+            <div class="eyebrow"><img class="icon" src="${icon}" alt="">Orca plugin</div>
+            <h1>Backlog,<br><em>in your sidebar.</em></h1>
+            <p class="lead">Find the ticket, read it, and hand it to an agent without leaving your workspace.</p>
+            <div class="chips"><span class="chip">Backlog's own layout</span><span class="chip">Right-click everything</span><span class="chip">Backlog AI</span><span class="chip">Agent hand-off</span></div>
+          </div>
+          <div class="stage">
+            <img class="shot back" src="/assets/detail-light.png" alt="">
+            <img class="shot front" src="/assets/home-dark.png" alt="">
+          </div>`
+      } else {
+        const [title, sub, shot] = pages[kind]
+        page.innerHTML = `
+          <div class="head"><img class="icon" src="${icon}" alt=""><div><h2>${title}</h2><p class="sub">${sub}</p></div></div>
+          <div class="pair">
+            <figure><img class="shot" src="/assets/${shot}-dark.png" alt=""><figcaption>DARK</figcaption></figure>
+            <figure><img class="shot" src="/assets/${shot}-light.png" alt=""><figcaption>LIGHT</figcaption></figure>
+          </div>`
+      }
+      Promise.all([...document.images].map((img) => (img.complete ? 0 : new Promise((r) => (img.onload = img.onerror = r))))).then(() => (document.title = 'ready'))
+    </script>
+  </body>
+</html>
