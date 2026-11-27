@@ -399,11 +399,8 @@ test('uploads pasted and chosen files, then comments with their ids; the pasted 
   const { tmpdir } = await import('node:os')
   const dir = mkdtempSync(join(tmpdir(), 'bt-files-'))
   try {
-    const shot = join(dir, 'paste-1.png')
     const log = join(dir, 'log.txt')
-    writeFileSync(shot, 'png')
     writeFileSync(log, 'hello')
-    picker.paste = async () => ({ image: shot })
     picker.choose = async () => [log]
     stubBacklog({ '/api/v2/projects/APP': { id: 10, projectKey: 'APP', textFormattingRule: 'markdown' } })
     const stubbed = globalThis.fetch
@@ -419,11 +416,15 @@ test('uploads pasted and chosen files, then comments with their ids; the pasted 
     writes.length = 0
     const worker = await mountWorker(main, { host: saved() })
     await worker.request('auth.status')
-    const pasted = await worker.request('files.paste')
-    assert.deepEqual(pasted.files.map((f) => [f.name, f.size, f.kind]), [['paste-1.png', 3, 'image']])
+    // A screenshot pasted into the comment: the panel hands over its bytes.
+    const pasted = await worker.request('files.put', { name: 'paste-1.png', data: Buffer.from('png').toString('base64') })
+    assert.deepEqual([pasted.name, pasted.size, pasted.kind], ['paste-1.png', 3, 'image'])
+    const { readdirSync } = await import('node:fs')
+    const { pasteFolder } = await import('./pick')
+    const before = readdirSync(pasteFolder()).filter((n) => n.startsWith('put-')).length
     const chosen = await worker.request('files.choose')
     assert.deepEqual(chosen.map((f) => [f.name, f.kind]), [['log.txt', 'file']])
-    await worker.request('issue.update', { key: 'APP-1', changes: { comment: 'Screenshot', files: [pasted.files[0]!.id, chosen[0]!.id] } })
+    await worker.request('issue.update', { key: 'APP-1', changes: { comment: 'Screenshot', files: [pasted.id, chosen[0]!.id] } })
     assert.deepEqual(uploaded, ['paste-1.png:png', 'log.txt:hello'])
     assert.deepEqual(writes, [
       {
@@ -433,16 +434,13 @@ test('uploads pasted and chosen files, then comments with their ids; the pasted 
       }
     ])
     // The pasted copy is gone; the chosen file is the person's own and stays.
-    assert.equal(existsSync(shot), false)
+    assert.equal(readdirSync(pasteFolder()).filter((n) => n.startsWith('put-')).length, before - 1)
     assert.equal(existsSync(log), true)
     const [entry] = await worker.request('audit.list')
     assert.equal(entry!.api, 'POST /api/v2/space/attachment, POST /api/v2/issues/APP-1/comments')
     assert.match(entry!.details ?? "", /attached paste-1\.png, log\.txt/)
     // A file the worker no longer holds (it restarted) is refused before anything is sent.
     await assert.rejects(worker.request('issue.update', { key: 'APP-1', changes: { files: ['file-9'] } }), /no longer waiting/)
-    // Nothing on the clipboard says why.
-    picker.paste = async () => ({ none: 'The clipboard holds no image.' })
-    assert.deepEqual(await worker.request('files.paste'), { files: [], message: 'The clipboard holds no image.' })
     assert.deepEqual(worker.refusals, [])
   } finally {
     rmSync(dir, { recursive: true, force: true })

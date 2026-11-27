@@ -1,5 +1,5 @@
 // The Backlog panel as a web page (Orca's HTML panel). Built by `npm run build:web` into dist/web;
-// the same worker answers it as the components panel (src/panel.tsx).
+// src/worker.ts answers its requests.
 import { h, render } from './vendor/preact.js'
 import { useEffect } from './vendor/hooks.js'
 import type { AuthState } from '../protocol.js'

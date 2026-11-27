@@ -5,7 +5,7 @@
 **Your Nulab Backlog issues in Orca's sidebar.**<br>
 Find the ticket, read it, and hand it to an agent without leaving your workspace.
 
-[![Version](https://img.shields.io/badge/version-v0.3.13-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
+[![Version](https://img.shields.io/badge/version-v0.3.14-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
@@ -125,12 +125,9 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
 
 ## Tips
 
-- **Two panels.** *Backlog Tasks* is a web page laid out like Backlog itself: right-click (or ⋯)
-  any issue, pull request, link, worktree, comment or attachment for its actions; drag a column's
-  edge to size it (double-click for the default); every dropdown has a search box (accents and
-  case ignored); images in descriptions and comments show inline as they scroll into view; paste
-  (Ctrl+V) or drop images straight into a comment. *Backlog Tasks (classic)* is the earlier panel
-  drawn with Orca's own controls, kept while the new one settles.
+- **Right-click** (or ⋯) any issue, pull request, link, worktree, comment or attachment for its
+  actions; drag a column's edge to size it (double-click for the default); every dropdown has a
+  search box (accents and case ignored); paste (Ctrl+V) or drop images straight into a comment.
 - **Already use [backlog-mcp-server](https://github.com/nulab/backlog-mcp-server)?** The Connect
   screen lists every `BACKLOG_DOMAIN` / `BACKLOG_API_KEY` entry it finds (Claude, Cursor, Windsurf,
   Gemini, Codex, VS Code, and the workspace's `.mcp.json`); press one to sign in. Keys stay in the
@@ -205,7 +202,7 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
 
 ```sh
 npm i                      # typings and the web panel's libraries
-npm run typecheck          # the worker and classic panel, then the web panel
+npm run typecheck          # the worker, then the web panel
 npm run build:web          # src/web -> dist/web
 orca plugin test . --json
 orca plugin check . --json
@@ -215,8 +212,7 @@ orca plugin dev watch . --check --json
 | File              | Role                                                         |
 | ----------------- | ------------------------------------------------------------ |
 | `src/protocol.ts` | Panel ↔ worker contract                                      |
-| `src/web/`        | The main panel: a web page (Preact), built into `dist/web`   |
-| `src/panel.tsx`   | The classic panel (Orca components, no build step)           |
+| `src/web/`        | The panel: a web page (Preact), built into `dist/web`        |
 | `src/worker.ts`   | Request handlers                                             |
 | `src/backlog.ts`  | Backlog API client and credential discovery                  |
 | `src/accounts.ts` | Saved accounts and the account of each Orca project          |
