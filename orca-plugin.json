@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "backlog-tasks",
   "name": "Backlog Tasks",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "description": "Nulab Backlog in Orca: your issues, filters, details with linked issues and pull requests, attachments, and one-click hand-off to an agent with a skill.",
   "author": {
     "name": "ngxuancam",
@@ -14,22 +14,27 @@
   "icon": "assets/icon.png",
   "cover": {
     "path": "assets/store/cover.png",
-    "alt": "Backlog for Orca: the sidebar panel with My Issues in dark and an issue detail in light"
+    "alt": "Backlog for Orca: the dashboard in dark and an issue detail in light, laid out like Backlog"
   },
   "screenshots": [
     {
       "path": "assets/store/home.png",
-      "alt": "The dashboard in dark and light: projects and My Issues with due-date tabs",
+      "alt": "The dashboard in dark and light: projects, my pull requests and My Issues with due-date tabs",
       "caption": "Your dashboard, like Backlog"
     },
     {
       "path": "assets/store/detail.png",
-      "alt": "An issue with linked issues, a pull request and the agent hand-off, in dark and light",
+      "alt": "An issue laid out like Backlog, with an inline image and its properties, in dark and light",
       "caption": "Everything about an issue"
     },
     {
+      "path": "assets/store/ai.png",
+      "alt": "The Backlog AI chat answering a question about open bugs, in dark and light",
+      "caption": "Backlog AI, in the panel"
+    },
+    {
       "path": "assets/store/settings.png",
-      "alt": "Settings with two accounts and the account each Orca project uses, in dark and light",
+      "alt": "Settings with two accounts and the audit log, in dark and light",
       "caption": "Several accounts, one per project"
     }
   ],
@@ -53,6 +58,22 @@
         "icon": "blocks",
         "entry": "src/panel.tsx",
         "ui": "components"
+      }
+    ],
+    "commands": [
+      {
+        "id": "backlog-tasks.openUpdate",
+        "title": "Backlog Tasks: Show the new release"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "update",
+        "text": "Backlog Tasks update",
+        "icon": "download",
+        "tone": "accent",
+        "tooltip": "A new version of Backlog Tasks is out",
+        "command": "backlog-tasks.openUpdate"
       }
     ]
   },

@@ -49,6 +49,7 @@ import type {
 import { PR_OPEN } from './protocol'
 import { checkMerge, git, remoteFor } from './git'
 import { pasteFolder, picker } from './pick'
+import { isNewer, REPOSITORY, updateSource, type Release } from './updates'
 import {
   askExpression,
   failureMessage,
@@ -665,6 +666,70 @@ ${urls.join(' ')}`
   })
 
   orca.panels.handle('issue.get', ({ key }) => detailOf(key))
+
+  // --- A newer release ------------------------------------------------------------------------
+  // The status bar item shows only when GitHub has a newer release than the one installed; the
+  // worker runs while the plugin is enabled (it has a status bar item), so it checks on its own.
+
+  const UPDATE_ITEM = 'update'
+  const UPDATE_COMMAND = 'backlog-tasks.openUpdate'
+  const CHECK_EVERY_MS = 6 * 60 * 60 * 1000
+  let newer: Release | null = null
+
+  const installedVersion = async () =>
+    (JSON.parse(await readFile(join(PLUGIN_ROOT, 'orca-plugin.json'), 'utf8')) as { version: string }).version
+
+  const showUpdate = (release: Release | null, installed: string) =>
+    orca.host
+      .call(
+        'statusBar.update',
+        release
+          ? {
+              id: UPDATE_ITEM,
+              visible: true,
+              text: `Backlog Tasks v${release.version}`,
+              tooltip: `Backlog Tasks v${release.version} is out (you have v${installed}). Press to see what is new.`
+            }
+          : { id: UPDATE_ITEM, visible: false }
+      )
+      .catch(() => undefined)
+
+  /** Asks GitHub at most every six hours (kept in storage across restarts), then shows or hides the item. */
+  async function checkForUpdate(): Promise<void> {
+    const installed = await installedVersion().catch(() => '')
+    const saved = (await orca.storage.get('update.latest').catch(() => null)) as { release: Release | null; at: number } | null
+    let latest = saved?.release ?? null
+    if (!saved || Date.now() - saved.at >= CHECK_EVERY_MS) {
+      try {
+        latest = await updateSource.latest()
+        await orca.storage.set('update.latest', { release: latest, at: Date.now() } as never)
+      } catch {
+        // Offline or rate-limited: keep what was known.
+      }
+    }
+    newer = latest && installed && isNewer(latest.version, installed) ? latest : null
+    await showUpdate(newer, installed)
+  }
+
+  // Hidden until a check finds a newer release; the first check waits for Orca to settle.
+  void showUpdate(null, '')
+  const firstCheck = setTimeout(() => void checkForUpdate(), 10_000)
+  const everyCheck = setInterval(() => void checkForUpdate(), CHECK_EVERY_MS)
+  firstCheck.unref?.()
+  everyCheck.unref?.()
+
+  /** Checks now (Settings, tests): what is installed, and the newer release if there is one. */
+  orca.panels.handle('update.check', async () => {
+    await orca.storage.delete('update.latest').catch(() => undefined)
+    await checkForUpdate()
+    return { installed: await installedVersion(), newer }
+  })
+
+  orca.commands.register(UPDATE_COMMAND, async () => {
+    const url = newer?.url ?? `https://github.com/${REPOSITORY}/releases/latest`
+    await cliLauncher.openBrowserTab(url)
+    return newer ? `Backlog Tasks v${newer.version}: the release notes are open in Orca's browser.` : 'Backlog Tasks is up to date.'
+  })
 
   // --- Backlog AI Assistant ----------------------------------------------------------------
   // Through the web chat, in a tab of Orca's browser on the space (src/backlogAi.ts).

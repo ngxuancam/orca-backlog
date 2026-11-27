@@ -5,11 +5,11 @@
 **Your Nulab Backlog issues in Orca's sidebar.**<br>
 Find the ticket, read it, and hand it to an agent without leaving your workspace.
 
-[![Version](https://img.shields.io/badge/version-v0.3.12-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
+[![Version](https://img.shields.io/badge/version-v0.3.13-2c9a7a)](https://github.com/ngxuancam/orca-backlog/releases/latest)
 [![Orca plugin](https://img.shields.io/badge/Orca-plugin-1c1c1c)](https://orca.dev/plugins/ngxuancam/orca-backlog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-444)](LICENSE)
 
-<img src="assets/store/cover.png" alt="Backlog for Orca: the sidebar panel with My Issues in dark and an issue detail in light" width="100%">
+<img src="assets/store/cover.png" alt="Backlog for Orca: the dashboard in dark and an issue detail in light, laid out like Backlog" width="100%">
 
 </div>
 
@@ -19,7 +19,7 @@ Find the ticket, read it, and hand it to an agent without leaving your workspace
 
 Working a Backlog ticket usually means a browser tab for the issue, another for the pull request,
 a download folder full of screenshots, and copy-pasting the description into your agent.
-Backlog for Orca puts all of it in Orca's right sidebar, drawn with Orca's own controls in its
+Backlog for Orca puts all of it in Orca's right sidebar, laid out like Backlog itself in Orca's
 light and dark themes, and starts an agent on the ticket in one click.
 
 ## Features
@@ -29,14 +29,17 @@ light and dark themes, and starts an agent on the ticket in one click.
 <table>
   <tr><th>Dark</th><th>Light</th></tr>
   <tr>
-    <td><img src="assets/home-dark.png" alt="Backlog for Orca: projects and my issues, dark theme" width="400"></td>
-    <td><img src="assets/home-light.png" alt="Backlog for Orca: projects and my issues, light theme" width="400"></td>
+    <td><img src="assets/home-dark.png" alt="Dashboard: projects, my pull requests with a conflict flagged, and My Issues, dark theme" width="400"></td>
+    <td><img src="assets/home-light.png" alt="Dashboard: projects, my pull requests with a conflict flagged, and My Issues, light theme" width="400"></td>
   </tr>
 </table>
 
 - **Projects** you belong to; click one to open its issues with the project filter already set.
+- **My pull requests**, open, in every project; a red **Conflict** when one would not merge.
 - **My Issues**: *Assigned to me* / *Created by me*, then *All*, *4 Days*, *Due Today*, *Overdue*,
   each with its count, the way Backlog's own dashboard shows them.
+- Issue types and statuses in the colours your space sets; right-click any issue for its actions
+  (open, assign, copy key or link); drag a column's edge to size it.
 
 ### 🔎 Search and filters
 
@@ -53,18 +56,36 @@ light and dark themes, and starts an agent on the ticket in one click.
 <table>
   <tr><th>Dark</th><th>Light</th></tr>
   <tr>
-    <td><img src="assets/detail-dark.png" alt="Issue detail with linked issues, pull requests and the agent hand-off, dark theme" width="400"></td>
-    <td><img src="assets/detail-light.png" alt="Issue detail with linked issues, pull requests and the agent hand-off, light theme" width="400"></td>
+    <td><img src="assets/detail-dark.png" alt="Issue detail laid out like Backlog: dates and status, the description with an inline image, and the properties, dark theme" width="400"></td>
+    <td><img src="assets/detail-light.png" alt="Issue detail laid out like Backlog: dates and status, the description with an inline image, and the properties, light theme" width="400"></td>
   </tr>
 </table>
 
-- Fields, description and comments rendered as Backlog shows them, line breaks included; each
-  image in them is an **Open preview** button that shows it in Orca's image preview.
-- The issue type badge takes the type's colour from Backlog (the nearest of Orca's tones).
+- Laid out like Backlog's issue page: type, key, dates and status; the description and comments
+  as Backlog shows them, with their **images inline** (loaded as you scroll; press one to see it
+  big); the properties in two columns; tabs for attachments, subtasking, pull requests, links
+  and worktrees.
+- **Assign** from the Assignee line or a right-click; it then offers to assign the issue's open
+  pull requests too (and the other way round from a pull request).
+- **Comment / Change Status** at the bottom: paste or drop screenshots straight into the comment.
 - **Linked issues**: parent, subtasks and related issues; open one and *Back* returns here.
 - **Pull requests** that link the issue, in any of the project's Git repositories, open ones included.
 - **Attachments**: images and videos open in Orca's preview; anything else is saved to
   `~/Downloads/orca-backlog-<project>/` and its folder opens.
+
+### ✨ Backlog AI
+
+<table>
+  <tr><th>Dark</th><th>Light</th></tr>
+  <tr>
+    <td><img src="assets/ai-dark.png" alt="Backlog AI chat: a question about open checkout bugs and its answer, dark theme" width="400"></td>
+    <td><img src="assets/ai-light.png" alt="Backlog AI chat: a question about open checkout bugs and its answer, light theme" width="400"></td>
+  </tr>
+</table>
+
+- When your space has the Backlog AI Assistant, the 🤖 button opens a chat laid out like
+  Backlog's: ask about your issues, follow up, or pick up an earlier chat from its history.
+  **Summarize** on an issue asks it for you.
 
 ### 🤖 Hand it to an agent
 
@@ -76,12 +97,12 @@ light and dark themes, and starts an agent on the ticket in one click.
 <table>
   <tr><th>Dark</th><th>Light</th></tr>
   <tr>
-    <td><img src="assets/settings-dark.png" alt="Settings: accounts and the account each Orca project uses, dark theme" width="400"></td>
-    <td><img src="assets/settings-light.png" alt="Settings: accounts and the account each Orca project uses, light theme" width="400"></td>
+    <td><img src="assets/settings-dark.png" alt="Settings: two accounts and the audit log of changes, dark theme" width="400"></td>
+    <td><img src="assets/settings-light.png" alt="Settings: two accounts and the audit log of changes, light theme" width="400"></td>
   </tr>
 </table>
 
-- Add as many Backlog accounts as you need; switch from the header.
+- Add as many Backlog accounts as you need; switch from the account button at the top.
 - Each **Orca project remembers its account**: switch once while you're in it, or set it in ⚙ Settings.
   Moving to another workspace switches to its account by itself.
 
@@ -167,6 +188,10 @@ Then open **Backlog Tasks** in the right sidebar and sign in with your space
   sent anywhere else, and there is no tracking.
 - It never writes into its own plugin folder, so Orca's integrity check of an installed copy
   always holds.
+- Every few hours it asks GitHub for this plugin's latest release (no token, no data about you)
+  and shows a status bar item only when a newer version is out; press it for the release notes.
+- The screenshots here come from mock data (a fictional "Acme Shop"): `node scripts/capture-store.mjs`
+  retakes them all.
 - Each [release](https://github.com/ngxuancam/orca-backlog/releases) has the source as `.zip` and
   `.tar.gz` with `MD5SUMS`, `SHA1SUMS`, `SHA256SUMS` and `SHA512SUMS`:
 
