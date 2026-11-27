@@ -133,6 +133,7 @@ function host(signedIn: boolean, extra: Record<string, (input: never) => unknown
       'runs.focus': (input) => ((focused = input), { opened: true }),
       'pullRequests.mine': () => [],
       'pullRequests.conflicts': () => ({}),
+      'ai.status': () => ({ state: 'unavailable' }),
       ...extra
     }
   })
@@ -253,6 +254,127 @@ test('comments and changes fields in one save; a comment alone is a comment', as
   assert.deepEqual(view.refusals, [])
 })
 
+test('Backlog AI shows only when the space has it', async () => {
+  view = await mount(panel, { host: host(true) })
+  await view.settled()
+  assert.equal(view.find({ label: 'Ask Backlog AI' }), null)
+  view.unmount()
+  view = await mount(panel, { host: host(true, { 'ai.status': () => ({ state: 'signedOut' }) }) })
+  await view.settled()
+  assert.equal(view.find({ label: 'Ask Backlog AI' }), null)
+  assert.ok(view.find({ text: /Sign in to Backlog in Orca's browser/ }))
+  assert.deepEqual(view.errors, [])
+})
+
+test('the Backlog AI screen chats, keeps the thread, opens a past chat from the history', async () => {
+  const asked: unknown[] = []
+  const copied: unknown[] = []
+  view = await mount(panel, {
+    host: host(true, {
+      'ai.status': () => ({ state: 'available' }),
+      'ai.history': () => ({
+        threads: [
+          { id: 'th-1', title: 'Login bugs', updated: Date.now() - 3_600_000 },
+          { id: 'th-0', title: 'Release notes', updated: Date.now() - 86_400_000 }
+        ],
+        usage: { state: 'warning', percent: 91 }
+      }),
+      'ai.thread': () => ({
+        turns: [{ question: 'Draft the notes', answer: { threadId: null, text: 'Here they are.', tools: [], approval: null } }],
+        more: false
+      }),
+      'ai.copy': (input: unknown) => (copied.push(input), { copied: true }),
+      'ai.ask': (input: { question: string; threadId?: string | null }) => (
+        asked.push(input),
+        input.question === 'Fail'
+          ? Promise.reject(new Error('Log in to acme.backlog.com in Orca\'s browser'))
+          : { threadId: 'th-1', text: `**Answer** to ${input.question}`, tools: ['search-issues-tool'], approval: input.question.startsWith('Make') ? 'add-issue-tool' : null }
+      )
+    })
+  })
+  await view.settled()
+  await view.press({ label: 'Ask Backlog AI' })
+  assert.ok(view.find({ text: 'How can I help?' }))
+  assert.ok(view.find({ text: /Almost out of AI credits/ }))
+  assert.equal(view.find({ role: 'button', text: 'Send' })?.props.disabled, true)
+  await view.type({ label: 'Ask Backlog AI' }, 'Login bugs?')
+  await view.press({ role: 'button', text: 'Send' })
+  const answers = () => view!.findAll({ type: 'Markdown' }).map((m) => m.props.content)
+  assert.deepEqual(answers(), ['**Answer** to Login bugs?'])
+  assert.ok(view.find({ text: 'Looked at: search issues' }))
+  await view.press({ label: 'Copy the answer' })
+  assert.deepEqual(copied, [{ text: '**Answer** to Login bugs?' }])
+  await view.type({ label: 'Ask Backlog AI' }, 'Make an issue')
+  await view.press({ role: 'button', text: 'Send' })
+  assert.ok(view.find({ text: /It wants to add issue/ }))
+  // The older answer folds so the latest stays in view.
+  assert.deepEqual(answers(), ['**Answer** to Make an issue'])
+  await view.press({ role: 'button', text: 'Show answer' })
+  assert.equal(answers().length, 2)
+  await view.type({ label: 'Ask Backlog AI' }, 'Fail')
+  await view.press({ role: 'button', text: 'Send' })
+  assert.equal(view.valueOf({ label: 'Ask Backlog AI' }), 'Fail')
+  assert.ok(view.find({ text: /Log in to acme/ }))
+  // The history: search, then open a past chat.
+  await view.press({ label: 'Chat history' })
+  await view.type({ label: 'Search chat history' }, 'release')
+  assert.equal(view.find({ type: 'ListItem', label: 'Login bugs' }), null)
+  await view.press({ type: 'ListItem', label: 'Release notes' })
+  assert.deepEqual(answers(), ['Here they are.'])
+  assert.ok(view.find({ text: 'Draft the notes' }))
+  await view.type({ label: 'Ask Backlog AI' }, 'Shorter', { replace: true })
+  await view.press({ role: 'button', text: 'Send' })
+  await view.press({ label: 'New chat' })
+  assert.ok(view.find({ text: 'How can I help?' }))
+  assert.deepEqual(asked, [
+    { question: 'Login bugs?', threadId: null },
+    { question: 'Make an issue', threadId: 'th-1' },
+    { question: 'Fail', threadId: 'th-1' },
+    { question: 'Shorter', threadId: 'th-0' }
+  ])
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+})
+
+test('a pasted image and a chosen file go with the comment; a removed one is dropped', async () => {
+  const updates: unknown[] = []
+  const dropped: unknown[] = []
+  let pastes = 0
+  view = await mount(panel, {
+    host: host(true, {
+      'files.paste': () =>
+        ++pastes === 1
+          ? { files: [{ id: 'file-1', name: 'paste-1.png', size: 2048, kind: 'image' }] }
+          : { files: [], message: 'The clipboard holds no image. Take a screenshot or copy an image first.' },
+      'files.choose': () => [
+        { id: 'file-2', name: 'log.txt', size: 10, kind: 'file' },
+        { id: 'file-3', name: 'extra.png', size: 10, kind: 'image' }
+      ],
+      'files.drop': (input: { ids: string[] }) => (dropped.push(input), { dropped: input.ids.length }),
+      'issue.update': (input: unknown) => (updates.push(input), detail)
+    })
+  })
+  await view.settled()
+  await view.activateRow({ type: 'Table' }, 'APP-1')
+  await view.press({ role: 'button', text: 'Update issue' })
+  await view.press({ role: 'button', text: 'Paste image' })
+  assert.match(String(view.find({ type: 'ListItem', label: 'paste-1.png' })?.props.description), /shown in the comment/)
+  // Nothing on the clipboard: a warning, no file.
+  await view.press({ role: 'button', text: 'Paste image' })
+  assert.ok(view.find({ text: /holds no image/ }))
+  await view.press({ role: 'button', text: 'Attach file…' })
+  await view.press({ label: 'Remove extra.png' })
+  assert.deepEqual(dropped, [{ ids: ['file-3'] }])
+  assert.equal(view.find({ type: 'ListItem', label: 'extra.png' }), null)
+  // Files alone are enough for a comment.
+  await view.press({ role: 'button', text: 'Comment' })
+  assert.deepEqual(updates, [{ key: 'APP-1', changes: { files: ['file-1', 'file-2'] } }])
+  assert.equal(view.find({ type: 'ListItem', label: 'paste-1.png' }), null)
+  assert.ok(view.find({ text: /2 files attached/ }))
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+})
+
 test('the header edits the summary and description in place, apart from the sheet', async () => {
   const updates: unknown[] = []
   view = await mount(panel, {
@@ -292,11 +414,13 @@ test('the header edits the summary and description in place, apart from the shee
 })
 
 test('a left click opens a link; its ⋯ menu copies it or opens it in Orca\'s browser', async () => {
-  view = await mount(panel, { host: host(true) })
+  const mock = host(true)
+  view = await mount(panel, { host: mock })
   await view.settled()
   await view.activateRow({ type: 'Table' }, 'APP-1')
-  // A plain link: the browser opens it on a left click, as anywhere else.
-  assert.equal(view.find({ type: 'Link', text: 'status.example.com/incidents/42' })?.props.href, 'https://status.example.com/incidents/42')
+  // A plain link: the browser opens it on a press. A ListItem, so a long title stays at the start.
+  await view.press({ type: 'ListItem', label: 'status.example.com/incidents/42' })
+  assert.deepEqual(mock.callsOf('shell.openExternal').at(-1), { url: 'https://status.example.com/incidents/42' })
   assert.equal(view.find({ role: 'button', text: 'Copy link' }), null)
   await view.press({ label: 'More for status.example.com/incidents/42' })
   await view.press({ role: 'button', text: 'Copy link' })
@@ -311,7 +435,8 @@ test('a left click opens a link; its ⋯ menu copies it or opens it in Orca\'s b
     ['orca', { url: 'https://status.example.com/incidents/42' }]
   ])
   // A pull request has the same menu; ✕ closes it.
-  assert.equal(view.find({ type: 'Link', text: '#7 Fix login' })?.props.href, 'https://acme.backlog.com/git/APP/app/pullRequests/7')
+  await view.press({ type: 'ListItem', label: '#7 Fix login' })
+  assert.deepEqual(mock.callsOf('shell.openExternal').at(-1), { url: 'https://acme.backlog.com/git/APP/app/pullRequests/7' })
   await view.press({ label: 'More for #7 Fix login' })
   assert.equal(view.findAll({ role: 'button', text: 'Copy link' }).length, 1)
   await view.press({ label: 'Close the menu of #7 Fix login' })
@@ -505,7 +630,7 @@ test('shows a Conflict badge on open pull requests that conflict, on Home and in
   await view.settled()
   // One PR per request, so each stays within a request's time limit.
   assert.deepEqual(asked, [['1-7'], ['1-8']])
-  assert.ok(view.find({ type: 'Link', text: '#8 Tidy up' }))
+  assert.ok(view.find({ type: 'ListItem', label: '#8 Tidy up' }))
   assert.equal(view.findAll({ type: 'Badge', text: 'Conflict' }).length, 1)
   assert.ok(view.find({ type: 'Text', text: '1 pull request has conflicts.' }))
   // Only a conflict shows: nothing for a clean one, and no file list.
@@ -538,14 +663,14 @@ test('links an existing worktree to the issue; its line shows it, ✕ unlinks it
   await view.select({ label: 'Link a worktree' }, 'ws:w1')
   await view.press({ role: 'button', text: 'Link' })
   assert.deepEqual(calls, [['link', { key: 'APP-1', workspaceId: 'w1' }]])
-  assert.ok(view.find({ type: 'Text', text: /^linked · main/ }))
+  assert.match(String(view.find({ type: 'ListItem', label: 'repo / main' })?.props.description), /^linked · main/)
   // A linked worktree is no longer offered.
   assert.equal(view.find({ label: 'Link a worktree' }), null)
-  await view.press({ type: 'Link', text: 'repo / main' })
+  await view.press({ type: 'ListItem', label: 'repo / main' })
   assert.deepEqual(focused, { workspaceId: 'w1' })
   await view.press({ label: 'Unlink repo / main' })
   assert.deepEqual(calls.at(-1), ['unlink', { key: 'APP-1', workspaceId: 'w1' }])
-  assert.equal(view.find({ type: 'Link', text: 'repo / main' }), null)
+  assert.equal(view.find({ type: 'ListItem', label: 'repo / main' }), null)
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.refusals, [])
 })

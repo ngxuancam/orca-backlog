@@ -40,6 +40,8 @@ import {
   type Tone
 } from 'orca'
 import type {
+  AiAnswer,
+  PendingFile,
   Account,
   AccountSettings,
   AuditEntry,
@@ -85,7 +87,7 @@ const caFileDraft = atom<string | null>(null)
 const connectionTest = atom<{ tone: Tone; text: string } | null>(null)
 
 /** Persisted, like openKey and trail: navigation survives reloads and restarts. */
-const screen = atom<'home' | 'issues' | 'settings'>('screen', 'home', { persist: 'plugin' })
+const screen = atom<'home' | 'issues' | 'settings' | 'ai'>('screen', 'home', { persist: 'plugin' })
 const meta = atom<Meta | null>(null)
 
 type ListState = { rows: IssueRow[]; total: number; loading: boolean; error: string | null }
@@ -149,7 +151,7 @@ const openKey = atom<string | null>('openKey', null, { persist: 'plugin' })
 const trail = atom<string[]>('trail', [], { persist: 'plugin' })
 const detail = atom<{ issue: IssueDetail | null; error: string | null }>({ issue: null, error: null })
 /** Where a result shows: next to the control that asked for it. */
-type Place = 'header' | 'fields' | 'links' | 'pullRequests' | 'myPullRequests' | 'worktrees' | 'attachments' | 'description' | 'comments' | 'launch'
+type Place = 'ai' | 'header' | 'fields' | 'links' | 'pullRequests' | 'myPullRequests' | 'worktrees' | 'attachments' | 'description' | 'comments' | 'launch'
 /** The last action's result, shown inline at its place; a success fades after a few seconds. */
 const notice = atom<{ place: Place; tone: Tone; text: string } | null>(null)
 let noticeTimer: ReturnType<typeof setTimeout> | undefined
@@ -169,7 +171,30 @@ const launching = atom(false)
 const closedSections = atom<string[]>('closedSections', [], { persist: 'plugin' })
 const NO_SKILL = 'none'
 /** The open issue's edit form: fields as typed and a comment. */
-const editing = atom<{ key: string; fields: IssueFields; comment: string } | null>(null)
+const editing = atom<{ key: string; fields: IssueFields; comment: string; files: PendingFile[] } | null>(null)
+/** The Backlog AI chat on Home: questions and answers of one thread, newest last. */
+const aiChat = atom<{ threadId: string | null; title: string | null; turns: { question: string; answer: AiAnswer }[]; more?: boolean }>({
+  threadId: null,
+  title: null,
+  turns: []
+})
+/** The chat history, and how much of the month's credit is used. */
+const aiHistory = atom<{ threads: { id: string; title: string; updated: number }[]; usage: { state: string; percent: number | null } | null } | null>(null)
+/** The history list in place of the chat (the panel is too narrow for both side by side). */
+const aiShowHistory = atom(false)
+const aiSearch = atom('')
+/** A chat being read from Backlog. */
+const aiLoading = atom<string | null>(null)
+const aiDraft = atom('')
+/** The question being answered, while it is. */
+const aiAsking = atom<string | null>(null)
+/** Whether the space has the assistant; the entry to it shows only when it does. */
+const aiStatus = atom<'available' | 'unavailable' | 'signedOut' | 'unknown' | null>(null)
+/** Older answers the person opened again (the latest is always open). */
+const aiOpenTurns = atom<number[]>([])
+
+/** Waiting for the clipboard or the OS's open dialog. */
+const picking = atom(false)
 /** Statuses, members, types… of the open issue's project, for the edit form. */
 const editMeta = atom<{ projectId: number; meta: Meta } | null>(null)
 const saving = atom(false)
@@ -536,7 +561,7 @@ function openProject(projectId: string): void {
 }
 
 /** Moves to another screen; set widths only last while the person stays on one. */
-function goTo(next: 'home' | 'issues' | 'settings'): void {
+function goTo(next: 'home' | 'issues' | 'settings' | 'ai'): void {
   if (read(screen) !== next) {
     set(columnWidths, {})
     set(pickingColumns, null)
@@ -548,6 +573,7 @@ function goHome(): void {
   goTo('home')
   loadDashboard()
   void loadMyPrs()
+  void loadAiStatus()
 }
 
 function refresh(): void {
@@ -555,6 +581,7 @@ function refresh(): void {
   if (now === 'home') {
     loadDashboard()
     void loadMyPrs()
+    void loadAiStatus(true)
   }
   else if (now === 'issues') void loadIssues()
   else void loadSettings()
@@ -760,7 +787,9 @@ type EditPart = 'text' | 'fields'
 const inPart = (part: EditPart, name: string) => (part === 'text') === TEXT_FIELDS.includes(name as keyof IssueFields)
 
 function startEditing(issue: IssueDetail): void {
-  set(editing, { key: issue.key, fields: issue.fields, comment: '' })
+  const before = read(editing)
+  if (before?.files.length) void plugin.request('files.drop', { ids: before.files.map((f) => f.id) }).catch(() => undefined)
+  set(editing, { key: issue.key, fields: issue.fields, comment: '', files: [] })
   set(editingText, false)
   if (read(editMeta)?.projectId !== issue.projectId) void loadEditMeta(issue.projectId)
 }
@@ -777,12 +806,137 @@ async function loadEditMeta(projectId: number): Promise<void> {
 const sameValue = (a: string | string[], b: string | string[]) => JSON.stringify(a) === JSON.stringify(b)
 
 /** What the form changed in one part, field by field; the fields part carries the comment. */
-export function changesOf(from: IssueFields, form: { fields: IssueFields; comment: string }, part: EditPart): IssueChanges {
+export function changesOf(
+  from: IssueFields,
+  form: { fields: IssueFields; comment: string; files?: PendingFile[] },
+  part: EditPart
+): IssueChanges {
   const changes: Record<string, string | string[]> = {}
   for (const [name, value] of Object.entries(form.fields) as [keyof IssueFields, string | string[]][]) {
     if (inPart(part, name) && !sameValue(value, from[name])) changes[name] = value
   }
-  return { ...changes, ...(part === 'fields' && form.comment.trim() ? { comment: form.comment } : {}) }
+  const files = part === 'fields' ? (form.files ?? []).map((f) => f.id) : []
+  return {
+    ...changes,
+    ...(part === 'fields' && form.comment.trim() ? { comment: form.comment } : {}),
+    ...(files.length ? { files } : {})
+  }
+}
+
+/** Asks Backlog AI in the chat's thread; the answer joins the chat. */
+async function askAi(): Promise<void> {
+  const question = read(aiDraft).trim()
+  if (!question || read(aiAsking)) return
+  const { threadId } = read(aiChat)
+  set(aiAsking, question)
+  set(aiDraft, '')
+  try {
+    // An answer can take a while: the assistant searches issues and wikis first.
+    const answer = await plugin.request('ai.ask', { question, threadId }, { timeoutMs: 120_000 })
+    const chat = read(aiChat)
+    set(aiChat, { ...chat, threadId: answer.threadId ?? chat.threadId, turns: [...chat.turns, { question, answer }] })
+    // Backlog names a new chat a few seconds after its first answer.
+    if (!chat.threadId) setTimeout(() => void loadAiHistory(), 4000)
+    else void loadAiHistory()
+  } catch (error) {
+    if (!read(aiDraft)) set(aiDraft, question)
+    say('ai', 'danger', message(error))
+  } finally {
+    set(aiAsking, null)
+  }
+}
+
+async function loadAiStatus(recheck = false): Promise<void> {
+  try {
+    set(aiStatus, (await plugin.request('ai.status', { recheck }, { timeoutMs: 60_000 })).state)
+  } catch {
+    set(aiStatus, 'unknown')
+  }
+}
+
+function newAiChat(): void {
+  set(aiChat, { threadId: null, title: null, turns: [] })
+  set(aiOpenTurns, [])
+  set(aiShowHistory, false)
+}
+
+function openAi(): void {
+  goTo('ai')
+  void loadAiHistory()
+}
+
+async function loadAiHistory(): Promise<void> {
+  try {
+    const history = await plugin.request('ai.history', undefined, { timeoutMs: 60_000 })
+    set(aiHistory, history)
+    const chat = read(aiChat)
+    const title = history.threads.find((t) => t.id === chat.threadId)?.title
+    if (title && title !== chat.title) set(aiChat, { ...chat, title })
+  } catch (error) {
+    say('ai', 'danger', message(error))
+  }
+}
+
+async function openAiThread(thread: { id: string; title: string }): Promise<void> {
+  if (read(aiAsking)) return
+  set(aiShowHistory, false)
+  set(aiLoading, thread.id)
+  try {
+    const { turns, more } = await plugin.request('ai.thread', { threadId: thread.id }, { timeoutMs: 60_000 })
+    set(aiChat, { threadId: thread.id, title: thread.title, turns, more })
+    set(aiOpenTurns, [])
+  } catch (error) {
+    say('ai', 'danger', message(error))
+  } finally {
+    set(aiLoading, null)
+  }
+}
+
+async function copyAnswer(text: string): Promise<void> {
+  try {
+    await plugin.request('ai.copy', { text })
+    say('ai', 'success', 'Copied the answer.')
+  } catch (error) {
+    say('ai', 'danger', message(error))
+  }
+}
+
+async function openAiOnWeb(): Promise<void> {
+  try {
+    await plugin.request('ai.open', { threadId: read(aiChat).threadId }, { timeoutMs: 60_000 })
+  } catch (error) {
+    say('ai', 'danger', message(error))
+  }
+}
+
+/** Adds the clipboard's image, or files from the OS's open dialog, to the comment. */
+async function addFiles(issue: IssueDetail, how: 'paste' | 'choose'): Promise<void> {
+  if (read(picking)) return
+  set(picking, true)
+  try {
+    const got =
+      how === 'paste'
+        ? await plugin.request('files.paste', undefined, { timeoutMs: 60_000 })
+        : { files: await plugin.request('files.choose', undefined, { timeoutMs: 120_000 }) }
+    const form = read(editing)
+    if (!form || form.key !== issue.key) {
+      if (got.files.length) void plugin.request('files.drop', { ids: got.files.map((f) => f.id) }).catch(() => undefined)
+      return
+    }
+    if ('message' in got && got.message) say('fields', 'warning', got.message)
+    if (got.files.length) set(editing, { ...form, files: [...form.files, ...got.files] })
+  } catch (error) {
+    say('fields', 'danger', message(error))
+  } finally {
+    set(picking, false)
+  }
+}
+
+function removeFile(issue: IssueDetail, id: string): void {
+  const form = read(editing)
+  if (!form || form.key !== issue.key) return
+  set(editing, { ...form, files: form.files.filter((f) => f.id !== id) })
+  void plugin.request('files.drop', { ids: [id] }).catch(() => undefined)
 }
 
 async function saveIssue(issue: IssueDetail, part: EditPart): Promise<void> {
@@ -801,10 +955,20 @@ async function saveIssue(issue: IssueDetail, part: EditPart): Promise<void> {
         .filter((name) => !inPart(part, name) && !sameValue(form.fields[name], issue.fields[name]))
         .map((name) => [name, form.fields[name]])
     )
-    set(editing, { key: next.key, fields: { ...next.fields, ...kept }, comment: part === 'fields' ? '' : form.comment })
+    set(editing, {
+      key: next.key,
+      fields: { ...next.fields, ...kept },
+      comment: part === 'fields' ? '' : form.comment,
+      files: part === 'fields' ? [] : form.files
+    })
     if (part === 'text') set(editingText, false)
-    const fields = Object.keys(changes).filter((c) => c !== 'comment').length
-    const parts = [fields ? `Saved ${fields} field${fields > 1 ? 's' : ''}` : null, changes.comment ? 'comment added' : null]
+    const fields = Object.keys(changes).filter((c) => c !== 'comment' && c !== 'files').length
+    const attached = changes.files?.length ?? 0
+    const parts = [
+      fields ? `Saved ${fields} field${fields > 1 ? 's' : ''}` : null,
+      changes.comment || attached ? 'comment added' : null,
+      attached ? `${attached} file${attached > 1 ? 's' : ''} attached` : null
+    ]
     say(part === 'text' ? 'header' : 'fields', 'success', `${parts.filter(Boolean).join(', ')}.`)
     refresh()
   } catch (error) {
@@ -1115,6 +1279,9 @@ function Header({ title, back, me }: { title: string; back?: () => void; me: Ses
           <Heading level={2}>{title}</Heading>
         </Row>
         <Row gap="xs">
+          {read(aiStatus) === 'available' ? (
+            <IconButton icon="bot" label="Ask Backlog AI" size="sm" variant="ghost" onPress={openAi} />
+          ) : null}
           <IconButton icon="refresh" label="Refresh" size="sm" variant="ghost" onPress={refresh} />
           <IconButton icon="settings" label="Settings" size="sm" variant="ghost" onPress={openSettings} />
         </Row>
@@ -1421,6 +1588,7 @@ function HomeView({ me }: { me: Session }) {
           </List>
         )}
       </Section>
+      <AiSignInHint />
       <MyPullRequests />
       <Section title="My Issues" id="myIssues">
         <Stack gap="sm">
@@ -1744,6 +1912,235 @@ function RichText({ content, issueKey, place }: { content: string; issueKey: str
   return <Stack gap="sm">{parts}</Stack>
 }
 
+/** Tool names as the assistant reports them (`search-issues-tool`) → `search issues`. */
+const toolLabel = (name: string) => name.replace(/-tool$/, '').replace(/[-_]+/g, ' ')
+
+/** Signed out in Orca's browser, the plan is unknown: say how to find out, once. */
+function AiSignInHint() {
+  if (read(aiStatus) !== 'signedOut') return null
+  return (
+    <Row gap="xs" align="center" wrap>
+      <Text muted size="sm">
+        Sign in to Backlog in Orca's browser to see whether Backlog AI is available.
+      </Text>
+      <Button size="xs" variant="ghost" icon="open-external" onPress={openAiOnWeb}>
+        Sign in
+      </Button>
+      <Button size="xs" variant="ghost" icon="refresh" onPress={() => loadAiStatus(true)}>
+        Check again
+      </Button>
+    </Row>
+  )
+}
+
+/** The chat's title: its first question, as Backlog names a thread after it. */
+const chatTitle = (question: string) => (question.length > 48 ? `${question.slice(0, 47)}…` : question)
+
+/** "3 h ago", "2 d ago": when a chat was last used. */
+function ago(time: number): string {
+  const minutes = Math.max(0, Math.round((Date.now() - time) / 60_000))
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.round(minutes / 60)
+  return hours < 24 ? `${hours} h ago` : `${Math.round(hours / 24)} d ago`
+}
+
+/** The month's credit, as Backlog warns about it. */
+function CreditNotice() {
+  const usage = read(aiHistory)?.usage
+  if (!usage || (usage.state !== 'warning' && usage.state !== 'unavailable')) return null
+  const used = usage.percent === null ? '' : ` (${usage.percent}% used)`
+  return usage.state === 'unavailable' ? (
+    <Callout tone="danger" title="Out of AI credits for the month">
+      {`Backlog AI is unavailable until the 1st of next month${used}.`}
+    </Callout>
+  ) : (
+    <Callout tone="warning" title="Almost out of AI credits for the month">
+      {`Once the limit is hit, your organization loses the assistant until the 1st of next month${used}.`}
+    </Callout>
+  )
+}
+
+/** The chat history: search, New chat, and the chats newest first. */
+function AiHistoryList() {
+  const history = read(aiHistory)
+  const search = read(aiSearch).trim().toLowerCase()
+  const current = read(aiChat).threadId
+  const threads = (history?.threads ?? []).filter((t) => !search || t.title.toLowerCase().includes(search))
+  return (
+    <Stack gap="sm">
+      <Input label="Search chat history" labelHidden type="search" placeholder="Search chat history" value={read(aiSearch)} onChange={(v) => set(aiSearch, v)} />
+      <Row justify="between" align="center">
+        <Text weight="medium" size="sm">
+          Chat history
+        </Text>
+        <Button size="xs" variant="ghost" icon="add" onPress={newAiChat}>
+          New chat
+        </Button>
+      </Row>
+      {!history ? (
+        <Spinner label="Loading chats" />
+      ) : threads.length ? (
+        <List label="Chat history">
+          {threads.map((t) => (
+            <ListItem
+              key={t.id}
+              icon={t.id === current ? 'check' : undefined}
+              title={t.title}
+              description={t.updated ? ago(t.updated) : undefined}
+              onPress={() => openAiThread(t)}
+            />
+          ))}
+        </List>
+      ) : (
+        <Text muted>{search ? 'No chat matches.' : 'No chats yet.'}</Text>
+      )}
+    </Stack>
+  )
+}
+
+/**
+ * The Backlog AI Assistant as its own screen, laid out like Backlog's chat: the history a press
+ * away, questions in bubbles on the right, answers as text on the left, the box pinned at the
+ * bottom. Older answers fold so the latest stays in view (the panel cannot scroll itself).
+ */
+function AiView() {
+  const chat = read(aiChat)
+  const asking = read(aiAsking)
+  const draft = read(aiDraft)
+  const opened = read(aiOpenTurns)
+  const showHistory = read(aiShowHistory)
+  const loading = read(aiLoading)
+  const first = chat.title ?? chat.turns[0]?.question ?? asking
+  const last = chat.turns.length - 1
+  return (
+    <Box height="100%" gap="sm">
+      <Box shrink={false}>
+        <Row justify="between" align="center">
+          <Row gap="xs" align="center">
+            <BackButton onPress={goHome} />
+            <Heading level={2}>{showHistory ? 'Chat history' : first ? chatTitle(first) : 'Backlog AI'}</Heading>
+          </Row>
+          <Row gap="xs">
+            <IconButton
+              icon={showHistory ? 'close' : 'layers'}
+              label={showHistory ? 'Back to the chat' : 'Chat history'}
+              size="sm"
+              variant="ghost"
+              onPress={() => {
+                set(aiShowHistory, !showHistory)
+                if (!showHistory) void loadAiHistory()
+              }}
+            />
+            <IconButton icon="add" label="New chat" size="sm" variant="ghost" disabled={!!asking} onPress={newAiChat} />
+            <IconButton icon="open-external" label="Open in Backlog" size="sm" variant="ghost" onPress={openAiOnWeb} />
+          </Row>
+        </Row>
+      </Box>
+      <Box grow minHeight={0} scroll="y" gap="md" paddingX="xs">
+        {showHistory ? (
+          <AiHistoryList />
+        ) : loading ? (
+          <Spinner label="Loading the chat" />
+        ) : (
+          <>
+            {chat.turns.length || asking ? (
+              <Text muted size="sm">
+                {chat.more ? 'Earlier messages are in Backlog: Open in Backlog' : 'Beginning of conversation'}
+              </Text>
+            ) : (
+              <Stack gap="sm">
+                <Heading level={3}>How can I help?</Heading>
+                <Text muted>Backlog AI reads the issues, wikis and documents of the projects you are in.</Text>
+                <Row gap="xs" wrap>
+                  {['Summarise my open issues', 'What changed this week?', 'Find issues about '].map((idea) => (
+                    <Button key={idea} size="sm" variant="outline" onPress={() => set(aiDraft, idea)}>
+                      {idea.trim()}
+                    </Button>
+                  ))}
+                </Row>
+              </Stack>
+            )}
+            {chat.turns.map((turn, index) => (
+              <Stack key={index} gap="sm">
+                {turn.question ? <QuestionBubble text={turn.question} /> : null}
+                {index === last || opened.includes(index) ? (
+                  <Answer answer={turn.answer} />
+                ) : (
+                  <Row>
+                    <Button size="xs" variant="ghost" icon="expand" onPress={() => set(aiOpenTurns, [...opened, index])}>
+                      Show answer
+                    </Button>
+                  </Row>
+                )}
+              </Stack>
+            ))}
+            {asking ? (
+              <Stack gap="sm">
+                <QuestionBubble text={asking} />
+                <Spinner label="Thinking" />
+              </Stack>
+            ) : null}
+          </>
+        )}
+      </Box>
+      <Box shrink={false} gap="xs">
+        <CreditNotice />
+        <Notice place="ai" />
+        <Box border radius="lg" padding="xs" gap="xs">
+          <Textarea
+            label="Ask Backlog AI"
+            labelHidden
+            rows={2}
+            placeholder={chat.turns.length ? 'Ask a follow-up' : 'Ask me anything'}
+            value={draft}
+            onChange={(value) => set(aiDraft, value)}
+            onSubmit={() => void askAi()}
+          />
+          <Row justify="between" align="center">
+            <Text muted size="xs">
+              AI can make mistakes; double-check outcomes.
+            </Text>
+            <Button size="sm" tone="accent" icon="next" disabled={!!asking || !!loading || !draft.trim()} onPress={askAi}>
+              Send
+            </Button>
+          </Row>
+        </Box>
+      </Box>
+    </Box>
+  )
+}
+
+/** A question, on the right in a grey bubble. */
+function QuestionBubble({ text }: { text: string }) {
+  return (
+    <Row justify="end">
+      <Box maxWidth="85%" background="muted" radius="lg" paddingX="sm" paddingY="xs">
+        <Text>{text}</Text>
+      </Box>
+    </Row>
+  )
+}
+
+/** An answer, as text on the left, with what it looked at and a copy button under it. */
+function Answer({ answer }: { answer: AiAnswer }) {
+  return (
+    <Stack gap="xs">
+      {answer.text.trim() ? <Markdown content={answer.text} /> : <Text muted>No answer text.</Text>}
+      {answer.approval ? (
+        <Callout tone="warning">{`It wants to ${toolLabel(answer.approval)}. Approve or decline that in Backlog: Open in Backlog.`}</Callout>
+      ) : null}
+      <Row gap="xs" align="center">
+        <IconButton icon="copy" label="Copy the answer" size="xs" variant="ghost" disabled={!answer.text.trim()} onPress={() => copyAnswer(answer.text)} />
+        {answer.tools.length ? (
+          <Text muted size="xs">
+            {`Looked at: ${answer.tools.map(toolLabel).join(', ')}`}
+          </Text>
+        ) : null}
+      </Row>
+    </Stack>
+  )
+}
+
 function LinkedIssues({ issue }: { issue: IssueDetail }) {
   const items = [
     ...(issue.parent ? [{ role: 'Parent', ...issue.parent }] : []),
@@ -1810,19 +2207,21 @@ function LinkRow(props: {
 }) {
   const { list, url, title, description, check } = props
   const open = isPicked(list, url)
+  // A ListItem, not a Link: Orca draws a Link as a button that centres its text once a long
+  // title wraps. A ListItem keeps it on one line, at the start.
   return (
     <Stack gap="xs">
       <Row gap="xs" align="center">
-        <Box grow minWidth={0} gap="none">
-          {/* Orca draws a Link as a button, which centres its text when stretched; a Row keeps it at the start. */}
-          <Row gap="xs" wrap>
-            <Link href={url}>{title}</Link>
-            {check && check !== 'checking' && check.state === 'conflict' ? <Badge tone="danger">Conflict</Badge> : null}
-          </Row>
-          <Text muted size="xs" truncate>
-            {description}
-          </Text>
-
+        <Box grow minWidth={0}>
+          <List label={title}>
+            <ListItem title={title} description={description} onPress={() => void openInBrowser(list, url)}>
+              {check && check !== 'checking' && check.state === 'conflict' ? (
+                <Row gap="none">
+                  <Badge tone="danger">Conflict</Badge>
+                </Row>
+              ) : null}
+            </ListItem>
+          </List>
         </Box>
         <IconButton
           icon={open ? 'close' : 'more'}
@@ -1835,6 +2234,15 @@ function LinkRow(props: {
       {open ? <LinkMenu list={list} url={url} /> : null}
     </Stack>
   )
+}
+
+/** A plain press on a link: the browser, with a word only when it fails. */
+async function openInBrowser(place: Place, url: string): Promise<void> {
+  try {
+    await shell.openExternal(url)
+  } catch (error) {
+    say(place, 'danger', message(error))
+  }
 }
 
 /** The last result for one place, as a line of text where the action was. */
@@ -1911,20 +2319,22 @@ function Worktrees({ issue }: { issue: IssueDetail }) {
       <Stack gap="sm">
         {runs.map((run) => (
           <Row key={run.workspaceId} gap="xs" align="center">
-            <Box grow minWidth={0} gap="none">
-              <Row gap="none">
-                <Link onPress={() => void focusRun(run.workspaceId)}>{run.label}</Link>
-              </Row>
-              <Text muted size="xs" truncate>
-                {[
-                  run.agent ? (agents.find((a) => a.value === run.agent)?.label ?? run.agent) : 'linked',
-                  run.skill,
-                  run.branch,
-                  `${run.agent ? 'started' : 'since'} ${new Date(run.startedAt).toLocaleString()}`
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </Text>
+            <Box grow minWidth={0}>
+              <List label={run.label}>
+                <ListItem
+                  icon="branch"
+                  title={run.label}
+                  onPress={() => void focusRun(run.workspaceId)}
+                  description={[
+                    run.agent ? (agents.find((a) => a.value === run.agent)?.label ?? run.agent) : 'linked',
+                    run.skill,
+                    run.branch,
+                    `${run.agent ? 'started' : 'since'} ${new Date(run.startedAt).toLocaleString()}`
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                />
+              </List>
             </Box>
             <IconButton
               icon="close"
@@ -2113,12 +2523,13 @@ function UpdateFields({ issue }: { issue: IssueDetail }) {
   const change = (part: Partial<IssueFields>) => set(editing, { ...form, fields: { ...f, ...part } })
   const changes = changesOf(issue.fields, form, 'fields')
   const dirty = Object.keys(changes).length > 0
-  const fieldCount = Object.keys(changes).filter((c) => c !== 'comment').length
+  const fieldCount = Object.keys(changes).filter((c) => c !== 'comment' && c !== 'files').length
   const busy = read(saving)
+  const fetching = read(picking)
   const label = busy
     ? 'Saving…'
     : fieldCount
-      ? `Save ${fieldCount} change${fieldCount > 1 ? 's' : ''}${changes.comment ? ' and comment' : ''}`
+      ? `Save ${fieldCount} change${fieldCount > 1 ? 's' : ''}${changes.comment || changes.files ? ' and comment' : ''}`
       : 'Comment'
   return (
     <Stack gap="sm">
@@ -2130,6 +2541,36 @@ function UpdateFields({ issue }: { issue: IssueDetail }) {
           onChange={(comment) => set(editing, { ...form, comment })}
           onSubmit={() => void saveIssue(issue, 'fields')}
         />
+        <Row gap="xs" wrap align="center">
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="copy"
+            tooltip="Attach the image on the clipboard, such as a screenshot"
+            disabled={busy || fetching}
+            onPress={() => addFiles(issue, 'paste')}
+          >
+            Paste image
+          </Button>
+          <Button size="sm" variant="ghost" icon="upload" disabled={busy || fetching} onPress={() => addFiles(issue, 'choose')}>
+            Attach file…
+          </Button>
+          {fetching ? <Spinner label="Waiting for the files" /> : null}
+        </Row>
+        {form.files.length ? (
+          <Stack gap="xs">
+            {form.files.map((f) => (
+              <Row key={f.id} gap="xs" align="center">
+                <Box grow minWidth={0}>
+                  <List label={f.name}>
+                    <ListItem icon="file" title={f.name} description={`${size(f.size)}${f.kind === 'image' ? ' · shown in the comment' : ''}`} />
+                  </List>
+                </Box>
+                <IconButton icon="close" label={`Remove ${f.name}`} size="sm" variant="ghost" disabled={busy} onPress={() => removeFile(issue, f.id)} />
+              </Row>
+            ))}
+          </Stack>
+        ) : null}
         {!meta ? (
           <Spinner label="Loading statuses and members" />
         ) : (
@@ -2174,7 +2615,8 @@ function discardFields(issue: IssueDetail): void {
   const form = read(editing)
   if (form?.key !== issue.key) return
   const text = Object.fromEntries(TEXT_FIELDS.map((name) => [name, form.fields[name]]))
-  set(editing, { key: issue.key, fields: { ...issue.fields, ...text }, comment: '' })
+  if (form.files.length) void plugin.request('files.drop', { ids: form.files.map((f) => f.id) }).catch(() => undefined)
+  set(editing, { key: issue.key, fields: { ...issue.fields, ...text }, comment: '', files: [] })
 }
 
 export default function Panel() {
@@ -2184,5 +2626,6 @@ export default function Panel() {
   if (!s) return <LoginView />
   if (key) return <DetailView issueKey={key} />
   const now = read(screen)
+  if (now === 'ai') return <AiView />
   return now === 'settings' ? <SettingsView /> : now === 'home' ? <HomeView me={s} /> : <IssuesView me={s} />
 }

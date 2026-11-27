@@ -123,5 +123,31 @@ async function openTerminal(workspace: { id: string; path?: string }): Promise<v
   await orcaJson(['terminal', 'create', '--worktree', worktreeSelector(workspace.id, workspace.path), '--focus'], 60_000)
 }
 
+/** A tab of Orca's browser, as `orca tab list` gives it. */
+export type BrowserTab = { browserPageId: string; url: string; loaded?: boolean; loadError?: unknown }
+
+/** Every tab of Orca's browser, in all workspaces. */
+async function browserTabs(): Promise<BrowserTab[]> {
+  const { tabs } = await orcaJson<{ tabs: BrowserTab[] }>(['tab', 'list', '--worktree', 'all'])
+  return tabs
+}
+
+/** Opens a tab in the active workspace without showing it; answers its page id. */
+async function createBrowserTab(url: string, focus = false): Promise<string> {
+  const { browserPageId } = await orcaJson<{ browserPageId: string }>(['tab', 'create', '--url', url, '--worktree', 'active', ...(focus ? ['--focus'] : [])], 60_000)
+  return browserPageId
+}
+
+/** Brings a tab forward in Orca. */
+async function showBrowserTab(page: string): Promise<void> {
+  await orcaJson(['tab', 'switch', '--page', page, '--focus'])
+}
+
+/** Runs a JavaScript expression in a tab's page and answers what it resolves to. */
+async function evalInTab(page: string, expression: string, timeout = 115_000): Promise<unknown> {
+  const { result } = await orcaJson<{ result: unknown }>(['eval', '--page', page, '--expression', expression], timeout)
+  return result
+}
+
 /** What the worker launches with; tests swap it to keep the real CLI out. */
-export const cliLauncher = { launchWithPrompt, openBrowserTab, openTerminal }
+export const cliLauncher = { launchWithPrompt, openBrowserTab, openTerminal, browserTabs, createBrowserTab, showBrowserTab, evalInTab }

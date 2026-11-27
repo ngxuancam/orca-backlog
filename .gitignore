@@ -3,3 +3,5 @@ node_modules/
 .orca-backlog/
 *.log
 .env*
+dist/web/preview.*
+dist/mockData.js

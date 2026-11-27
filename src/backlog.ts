@@ -49,7 +49,9 @@ export async function request(creds: Credentials, path: string, query?: Query, w
   try {
     response = await fetch(
       buildUrl(creds, path, query),
-      write ? { method: write.method, body: appendParams(new URLSearchParams(), write.form) } : undefined
+      write
+        ? { method: write.method, body: 'file' in write ? write.file : appendParams(new URLSearchParams(), write.form) }
+        : undefined
     )
   } catch (error) {
     throw new Error(`Cannot reach ${creds.space}: ${reasonOf(error)}`)
@@ -60,11 +62,21 @@ export async function request(creds: Credentials, path: string, query?: Query, w
   throw new Error(`Backlog ${response.status}: ${message}`)
 }
 
-/** A change to Backlog, sent as a form like backlog-js sends it. */
-export type Write = { method: 'POST' | 'PATCH'; form: Query }
+/** A change to Backlog, sent as a form like backlog-js sends it; or a file, as multipart. */
+export type Write = { method: 'POST' | 'PATCH'; form: Query } | { method: 'POST'; file: FormData }
 
 export async function send<T>(creds: Credentials, write: Write, path: string): Promise<T> {
   return (await (await request(creds, path, undefined, write)).json()) as T
+}
+
+/**
+ * Uploads a file for a comment or an issue (`POST /space/attachment`); its id goes in the next
+ * write's `attachmentId[]`. Backlog drops an upload nothing attaches within an hour.
+ */
+export async function uploadAttachment(creds: Credentials, name: string, data: Uint8Array<ArrayBuffer>): Promise<{ id: number; name: string; size: number }> {
+  const file = new FormData()
+  file.append('file', new Blob([data], { type: 'application/octet-stream' }), name)
+  return send(creds, { method: 'POST', file }, '/space/attachment')
 }
 
 export async function api<T>(creds: Credentials, path: string, query?: Query): Promise<T> {

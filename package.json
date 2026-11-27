@@ -3,16 +3,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc -p .",
+    "typecheck": "tsc -p . && tsc -p src/web --noEmit",
     "test": "orca plugin test . --json",
     "check": "orca plugin check . --json",
-    "set-version": "node scripts/set-version.mjs"
+    "set-version": "node scripts/set-version.mjs",
+    "vendor": "node scripts/vendor.mjs",
+    "build:web": "node scripts/build-web.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "dompurify": "3.2.6",
+    "marked": "15.0.12",
+    "preact": "10.27.2",
     "typescript": "^7.0.2"
   },
-  "version": "0.3.11",
+  "version": "0.3.12",
   "license": "MIT",
   "repository": "github:ngxuancam/orca-backlog"
 }

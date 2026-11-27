@@ -2,14 +2,15 @@
 // Orca starts it on the panel's first plugin.request; an idle worker stops, so accounts live in
 // storage and secrets (src/accounts.ts) and the active one is rebuilt on demand.
 import { createHash } from 'node:crypto'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { isAbsolute, join, relative } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { accountId, accountStore } from './accounts'
 import { auditLog, excerpt, type AuditInput } from './audit'
 import { applyCertificates, DEFAULT_CERTIFICATES } from './certificates'
-import { api, discoverCredentials, normalizeSpace, request, send, type Credentials, type Query } from './backlog'
+import { api, discoverCredentials, normalizeSpace, request, send, uploadAttachment, type Credentials, type Query } from './backlog'
 import {
   attachmentKind,
   downloadsFolder,
@@ -42,10 +43,29 @@ import type {
   ConflictCheck,
   Meta,
   Option,
+  PendingFile,
   Session
 } from './protocol'
 import { PR_OPEN } from './protocol'
 import { checkMerge, git, remoteFor } from './git'
+import { pasteFolder, picker } from './pick'
+import {
+  askExpression,
+  failureMessage,
+  getExpression,
+  messagesPath,
+  readFetched,
+  readResult,
+  readStatus,
+  STATUS_EXPRESSION,
+  threadsPath,
+  toHistory,
+  toTurns,
+  usagePath,
+  type AiStatus,
+  type Fetched
+} from './backlogAi'
+import { capMarkdown } from './inline'
 
 const PAGE = 50
 /** Backlog's fixed id for "Closed"; every project has it. */
@@ -75,7 +95,7 @@ type Issue = {
   summary: string
   description: string | null
   issueType: Named & { color?: string }
-  status: Named
+  status: Named & { color?: string }
   priority: Named | null
   assignee: Named | null
   createdUser: Named | null
@@ -95,12 +115,15 @@ type Issue = {
 }
 type PullRequestEntity = {
   id: number
+  projectId?: number
   number: number
   summary: string
   branch: string
   base: string
   status: Named
   createdUser: Named | null
+  assignee?: Named | null
+  issue?: { id: number; issueKey?: string } | null
   updated: string
 }
 type Repository = Named & { httpUrl?: string; sshUrl?: string }
@@ -112,6 +135,7 @@ const toRow = (i: Issue): IssueRow => ({
   summary: i.summary,
   status: i.status.name,
   statusId: i.status.id,
+  statusColor: i.status.color ?? null,
   priority: i.priority?.name ?? '',
   type: i.issueType.name,
   typeColor: i.issueType.color ?? null,
@@ -127,11 +151,15 @@ const toRow = (i: Issue): IssueRow => ({
   version: names(i.versions),
   resolution: i.resolution?.name ?? '',
   estimatedHours: i.estimatedHours ?? null,
-  actualHours: i.actualHours ?? null
+  actualHours: i.actualHours ?? null,
+  projectId: i.projectId,
+  assigneeId: i.assignee?.id ?? null,
+  createdUserId: i.createdUser?.id ?? null
 })
 const names = (list: Named[] | undefined) => (list ?? []).map((x) => x.name).join(', ')
 const linked = (i: Issue): LinkedIssue => ({ key: i.issueKey, summary: i.summary, status: i.status.name, statusId: i.status.id })
-const options = (items: Named[]): Option[] => items.map((x) => ({ value: String(x.id), label: x.name }))
+const options = (items: (Named & { color?: string })[]): Option[] =>
+  items.map((x) => ({ value: String(x.id), label: x.name, ...(x.color ? { color: x.color } : {}) }))
 const ids = (value: string | undefined) => (value ? value.split(',').map(Number).filter(Boolean) : undefined)
 
 export default function activate(orca: OrcaWorkerApi): void {
@@ -323,14 +351,15 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
 
   const get = async <T>(path: string, query?: Query) => api<T>(await creds(), path, query)
   const projects = () => cached('projects', () => get<Project[]>('/projects', { archived: false }))
-  const statusesOf = (projectId: number) => cached(`statuses:${projectId}`, () => get<Named[]>(`/projects/${projectId}/statuses`))
+  const statusesOf = (projectId: number) =>
+    cached(`statuses:${projectId}`, () => get<(Named & { color?: string })[]>(`/projects/${projectId}/statuses`))
   const priorities = () => cached('priorities', () => get<Named[]>('/priorities'))
   // Advanced-filter lists are optional: one that fails leaves only its own dropdown empty.
   const resolutions = () => cached('resolutions', () => get<Named[]>('/resolutions')).catch(() => [] as Named[])
   /** A project's own lists for the advanced filters; none without one project chosen. */
   const ofProject = (projectId: string | undefined, what: 'issueTypes' | 'categories' | 'versions') =>
     projectId
-      ? cached(`${what}:${projectId}`, () => get<Named[]>(`/projects/${projectId}/${what}`))
+      ? cached(`${what}:${projectId}`, () => get<(Named & { color?: string })[]>(`/projects/${projectId}/${what}`))
           .then(options)
           .catch(() => [] as Option[])
       : Promise.resolve([] as Option[])
@@ -358,8 +387,12 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
       ? [await statusesOf(Number(projectId))]
       : await Promise.all((await projects()).map((p) => statusesOf(p.id)))
     const byName = new Map<string, number[]>()
-    for (const s of lists.flat()) byName.set(s.name, [...new Set([...(byName.get(s.name) ?? []), s.id])])
-    return [...byName].map(([label, list]) => ({ value: list.join(','), label }))
+    const colors = new Map<string, string>()
+    for (const s of lists.flat()) {
+      byName.set(s.name, [...new Set([...(byName.get(s.name) ?? []), s.id])])
+      if (s.color && !colors.has(s.name)) colors.set(s.name, s.color)
+    }
+    return [...byName].map(([label, list]) => ({ value: list.join(','), label, ...(colors.has(label) ? { color: colors.get(label)! } : {}) }))
   }
 
   async function statusIds(query: IssueFilter): Promise<number[] | undefined> {
@@ -387,10 +420,19 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
     orNone(cached(`repos:${project.id}`, () => get<Repository[]>(`/projects/${project.id}/git/repositories`)))
 
   /** What a conflict check needs of each PR the panel was given, by `PullRequest.key`. */
-  const prInfo = new Map<string, { urls: string[]; base: string; branch: string; statusId: number }>()
+  const prInfo = new Map<string, { urls: string[]; base: string; branch: string; statusId: number; projectId: number; repoId: number; number: number; label: string }>()
   function toPullRequest(project: Project, repo: Repository, pr: PullRequestEntity): PullRequest {
     const key = `${repo.id}-${pr.number}`
-    prInfo.set(key, { urls: [repo.httpUrl ?? '', repo.sshUrl ?? ''], base: pr.base, branch: pr.branch, statusId: pr.status.id })
+    prInfo.set(key, {
+      urls: [repo.httpUrl ?? '', repo.sshUrl ?? ''],
+      base: pr.base,
+      branch: pr.branch,
+      statusId: pr.status.id,
+      projectId: project.id,
+      repoId: repo.id,
+      number: pr.number,
+      label: `${repo.name} #${pr.number}`
+    })
     return {
       key,
       number: pr.number,
@@ -402,7 +444,11 @@ ${c.apiKey}`).digest('hex').slice(0, 12)
       statusId: pr.status.id,
       author: pr.createdUser?.name ?? null,
       updated: Date.parse(pr.updated),
-      url: `https://${current!.creds.space}/git/${project.projectKey}/${encodeURIComponent(repo.name)}/pullRequests/${pr.number}`
+      url: `https://${current!.creds.space}/git/${project.projectKey}/${encodeURIComponent(repo.name)}/pullRequests/${pr.number}`,
+      projectId: project.id,
+      assignee: pr.assignee?.name ?? null,
+      assigneeId: pr.assignee?.id ?? null,
+      issueKey: pr.issue?.issueKey ?? null
     }
   }
 
@@ -620,24 +666,214 @@ ${urls.join(' ')}`
 
   orca.panels.handle('issue.get', ({ key }) => detailOf(key))
 
+  // --- Backlog AI Assistant ----------------------------------------------------------------
+  // Through the web chat, in a tab of Orca's browser on the space (src/backlogAi.ts).
+
+  const onSpace = (url: string, space: string) => {
+    try {
+      return new URL(url).host === space
+    } catch {
+      return false
+    }
+  }
+
+  /** A loaded tab of the space; one is opened (not shown) when there is none. */
+  async function spaceTab(space: string): Promise<string> {
+    const tabs = await cliLauncher.browserTabs()
+    const open = tabs.find((t) => onSpace(t.url, space) && !t.loadError)
+    if (open) return open.browserPageId
+    const page = await cliLauncher.createBrowserTab(`https://${space}/dashboard`)
+    // Wait for it to load (and to land on the login page, when the browser is not signed in).
+    for (let i = 0; i < 40; i++) {
+      const tab = (await cliLauncher.browserTabs()).find((t) => t.browserPageId === page)
+      if (tab?.loaded) break
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    return page
+  }
+
+  orca.panels.handle('ai.ask', async ({ question, threadId }) => {
+    const asked = question.trim()
+    if (!asked) throw new Error('Type a question first.')
+    if (asked.length > 4000) throw new Error('Keep the question under 4,000 characters.')
+    const { space } = await creds()
+    const result = await audit.track(
+      inSpace({
+        action: 'Asked Backlog AI',
+        api: "POST /ai/agents/ai-assistant/stream (web chat, in Orca's browser)",
+        target: space,
+        details: `"${excerpt(asked)}"${threadId ? ' (same chat)' : ''}`
+      }),
+      async () => {
+        const page = await spaceTab(space)
+        const r = readResult(await cliLauncher.evalInTab(page, askExpression(asked, threadId ?? null)))
+        if (r.ok) return r
+        if (r.reason === 'login') await cliLauncher.showBrowserTab(page).catch(() => undefined)
+        throw new Error(failureMessage(r, space))
+      }
+    )
+    return { threadId: result.threadId, text: capMarkdown(result.text), tools: result.tools, approval: result.approval }
+  })
+
+  const AI_STATUS_TTL = 24 * 60 * 60 * 1000
+
+  orca.panels.handle('ai.status', async ({ recheck }) => {
+    const { space } = await creds()
+    const key = `aiStatus:${space}`
+    const saved = (await orca.storage.get(key)) as { state: AiStatus; at: number } | null
+    if (!recheck && saved && Date.now() - saved.at < AI_STATUS_TTL) return { state: saved.state }
+    let state: AiStatus
+    try {
+      state = readStatus(await cliLauncher.evalInTab(await spaceTab(space), STATUS_EXPRESSION, 20_000))
+    } catch {
+      state = 'unknown'
+    }
+    // Signed out or unreadable says nothing about the plan: keep what was known.
+    if (state === 'available' || state === 'unavailable') await orca.storage.set(key, { state, at: Date.now() })
+    else if (saved && state === 'unknown') state = saved.state
+    return { state }
+  })
+
+  /** GETs under the chat's `/ai` in the space's tab; a signed-out answer brings the tab forward. */
+  async function aiGet(paths: string[]): Promise<Fetched[]> {
+    const { space } = await creds()
+    const page = await spaceTab(space)
+    const fetched = readFetched(await cliLauncher.evalInTab(page, getExpression(paths), 30_000), paths.length)
+    if (fetched.some((f) => f.status === 401)) {
+      await cliLauncher.showBrowserTab(page).catch(() => undefined)
+      throw new Error(failureMessage({ ok: false, reason: 'login' }, space))
+    }
+    return fetched
+  }
+
+  orca.panels.handle('ai.history', async () => {
+    const [threads, usage] = await aiGet([threadsPath, usagePath])
+    if (threads!.status !== 200) throw new Error(`Cannot read the chat history (HTTP ${threads!.status || 'error'}).`)
+    return toHistory(threads!, usage!)
+  })
+
+  orca.panels.handle('ai.thread', async ({ threadId }) => {
+    const [messages] = await aiGet([messagesPath(threadId)])
+    if (messages!.status !== 200) throw new Error(`Cannot read this chat (HTTP ${messages!.status || 'error'}).`)
+    const { turns, more } = toTurns(messages!)
+    return { turns: turns.map((t) => ({ ...t, answer: { ...t.answer, text: capMarkdown(t.answer.text) } })), more }
+  })
+
+  orca.panels.handle('ai.copy', async ({ text }) => {
+    await copyToClipboard(text)
+    return { copied: true as const }
+  })
+
+  orca.panels.handle('ai.open', async ({ threadId }) => {
+    const { space } = await creds()
+    const page = await spaceTab(space)
+    // The web chat reopens on the thread kept in this session key, then the widget opens.
+    const thread = JSON.stringify({ open: true, threadId: threadId ?? undefined })
+    await cliLauncher
+      .evalInTab(
+        page,
+        `(() => { try { sessionStorage.setItem('mastra:sidePanel', ${JSON.stringify(thread)}) } catch {} ; location.reload(); return true })()`,
+        20_000
+      )
+      .catch(() => undefined)
+    await cliLauncher.showBrowserTab(page)
+    return { opened: true as const }
+  })
+
+  // --- Files for a comment -----------------------------------------------------------------
+  // The panel has no file input: the worker reads the clipboard or opens the OS dialog, and keeps
+  // the files here until the comment is sent. The panel only ever sees ids, names and sizes.
+
+  const pending = new Map<string, { path: string; name: string; pasted: boolean }>()
+  let pendingSeq = 0
+  async function hold(path: string, pasted: boolean): Promise<PendingFile> {
+    const info = await stat(path)
+    if (!info.isFile()) throw new Error(`${basename(path)} is not a file`)
+    const id = `file-${++pendingSeq}`
+    const name = basename(path)
+    pending.set(id, { path, name, pasted })
+    return { id, name, size: info.size, kind: attachmentKind(name) }
+  }
+  async function forget(id: string): Promise<void> {
+    const file = pending.get(id)
+    pending.delete(id)
+    if (file?.pasted) {
+      await rm(file.path, { force: true }).catch(() => undefined)
+      // A put file sits alone in its own folder.
+      if (/^put-\d+-\d+$/.test(basename(dirname(file.path)))) await rm(dirname(file.path), { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  orca.panels.handle('files.paste', async () => {
+    const got = await picker.paste()
+    if ('none' in got) return { files: [], message: got.none }
+    if ('image' in got) return { files: [await hold(got.image, true)] }
+    return { files: await Promise.all(got.files.map((path) => hold(path, false))) }
+  })
+
+  orca.panels.handle('files.choose', async () =>
+    Promise.all((await picker.choose('Attach to the Backlog comment')).map((path) => hold(path, false)))
+  )
+
+  /** Up to 25 MB a file: what Backlog takes on most plans, and what fits a request comfortably. */
+  const MAX_PUT_BYTES = 25 << 20
+
+  orca.panels.handle('files.put', async ({ name, data }) => {
+    const bytes = Buffer.from(data, 'base64')
+    if (!bytes.length) throw new Error('The file is empty.')
+    if (bytes.length > MAX_PUT_BYTES) throw new Error(`${name} is over 25 MB; attach it in Backlog.`)
+    const dir = join(pasteFolder(), `put-${Date.now()}-${++pendingSeq}`)
+    await mkdir(dir, { recursive: true })
+    const path = join(dir, safeName(basename(name), 'pasted.png'))
+    await writeFile(path, bytes)
+    return hold(path, true)
+  })
+
+  orca.panels.handle('files.drop', async ({ ids }) => {
+    await Promise.all(ids.map(forget))
+    return { dropped: ids.length }
+  })
+
+  /** `markdown` or `backlog` (Backlog notation): how the project writes an image in text. */
+  async function formattingOf(issueKey: string): Promise<string> {
+    const projectKey = issueKey.slice(0, issueKey.lastIndexOf('-'))
+    const project = await cached(`project:${projectKey}`, () =>
+      get<{ textFormattingRule?: string }>(`/projects/${encodeURIComponent(projectKey)}`)
+    )
+    return project.textFormattingRule ?? 'markdown'
+  }
+
   orca.panels.handle('issue.update', async ({ key, changes }) => {
     const path = `/issues/${encodeURIComponent(key)}`
     const form = changeForm(changes)
-    const comment = changes.comment?.trim()
+    const files = (changes.files ?? []).map((id) => {
+      const file = pending.get(id)
+      if (!file) throw new Error('A file to attach is no longer waiting (Orca restarted the plugin). Remove it and add it again.')
+      return file
+    })
+    let comment = changes.comment?.trim() ?? ''
+    if (files.length) comment = withFiles(comment, files.map((f) => f.name), await formattingOf(key))
     const fields = Object.keys(form).length
     if (!fields && !comment) throw new Error('Nothing to save')
     const write = fields
       ? { method: 'PATCH' as const, form: comment ? { ...form, comment } : form, path }
-      : { method: 'POST' as const, form: { content: comment! }, path: `${path}/comments` }
+      : { method: 'POST' as const, form: { content: comment }, path: `${path}/comments` }
     await audit.track(
       inSpace({
         action: fields ? 'Updated issue' : 'Commented on issue',
-        api: `${write.method} /api/v2${write.path}`,
+        api: `${files.length ? 'POST /api/v2/space/attachment, ' : ''}${write.method} /api/v2${write.path}`,
         target: key,
-        details: describeChanges(changes)
+        details: describeChanges(changes, files.map((f) => f.name))
       }),
-      async () => send(await creds(), write, write.path)
+      async () => {
+        const c = await creds()
+        const attachmentId: number[] = []
+        // One at a time, before the comment: if one fails, nothing is attached or posted.
+        for (const file of files) attachmentId.push((await uploadAttachment(c, file.name, await readFile(file.path))).id)
+        return send(c, { method: write.method, form: attachmentId.length ? { ...write.form, attachmentId } : write.form }, write.path)
+      }
     )
+    await Promise.all((changes.files ?? []).map(forget))
     return detailOf(key)
   })
 
@@ -664,6 +900,7 @@ ${urls.join(' ')}`
       comments: texts.map((c) => ({
         id: c.id,
         author: c.createdUser.name,
+        authorId: c.createdUser.id,
         content: backlogMarkdown(c.content!, i.attachments),
         created: Date.parse(c.created)
       })),
@@ -716,6 +953,22 @@ ${urls.join(' ')}`
     return { opened: true as const }
   })
 
+  /** Inline previews in the web panel: images only, and not huge ones. */
+  const MAX_INLINE_BYTES = 8 << 20
+  const IMAGE_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', avif: 'image/avif', ico: 'image/x-icon' }
+
+  orca.panels.handle('attachment.data', async ({ key, attachmentId }) => {
+    const i = await issue(key)
+    const file = i.attachments.find((a) => a.id === attachmentId)
+    if (!file) throw new Error(`${key} has no attachment ${attachmentId}`)
+    const mime = IMAGE_MIME[file.name.split('.').pop()?.toLowerCase() ?? '']
+    // SVG is left out on purpose: it can carry script.
+    if (!mime) throw new Error(`${file.name} is not an image the panel shows inline`)
+    if (file.size > MAX_INLINE_BYTES) throw new Error(`${file.name} is over 8 MB: open it instead`)
+    const bytes = await downloadAttachment(i.issueKey, file.id)
+    return { mime, data: Buffer.from(bytes).toString('base64') }
+  })
+
   orca.panels.handle('attachment.open', async ({ key, attachmentId }) => {
     const i = await issue(key)
     const file = i.attachments.find((a) => a.id === attachmentId)
@@ -758,6 +1011,33 @@ ${urls.join(' ')}`
   })
 
   // --- Hand an issue to an agent --------------------------------------------------------------
+
+  /** Users' icons by id, while the worker runs: avatars repeat on every list. */
+  const icons = new Map<number, Promise<{ mime: string; data: string }>>()
+  orca.panels.handle('user.icon', ({ userId }) => {
+    if (!icons.has(userId)) {
+      const load = (async () => {
+        const res = await request(await creds(), `/users/${userId}/icon`)
+        const mime = (res.headers.get('content-type') ?? 'image/png').split(';')[0]!.trim()
+        if (!mime.startsWith('image/') || mime.includes('svg')) throw new Error('Not an image icon')
+        return { mime, data: Buffer.from(await res.arrayBuffer()).toString('base64') }
+      })()
+      load.catch(() => icons.delete(userId))
+      icons.set(userId, load)
+    }
+    return icons.get(userId)!
+  })
+
+  orca.panels.handle('pullRequest.assign', async ({ key, assigneeId }) => {
+    const info = prInfo.get(key)
+    if (!info) throw new Error('Reload the list: this pull request is not known yet.')
+    const path = `/projects/${info.projectId}/git/repositories/${info.repoId}/pullRequests/${info.number}`
+    await audit.track(
+      inSpace({ action: 'Assigned pull request', api: `PATCH /api/v2${path}`, target: info.label, details: assigneeId === null ? 'assignee → (none)' : `assignee → ${assigneeId}` }),
+      async () => send(await creds(), { method: 'PATCH', form: { assigneeId: assigneeId === null ? '' : assigneeId } }, path)
+    )
+    return { ok: true as const }
+  })
 
   orca.panels.handle('launch.options', async () => {
     const [{ workspaces }, { projects: orcaProjects }, context, agents, skills] = await Promise.all([
@@ -969,12 +1249,12 @@ const FIELD_NAMES: Record<string, string> = {
   actualHours: 'actual hours'
 }
 
-/** The audit log's line for a save: ids as sent, free text as an excerpt. */
-export function describeChanges(changes: IssueChanges): string {
+/** The audit log's line for a save: ids as sent, free text as an excerpt, files by name. */
+export function describeChanges(changes: IssueChanges, files: string[] = []): string {
   const parts: string[] = []
   for (const [field, value] of Object.entries(changes) as [keyof IssueChanges, string | string[] | undefined][]) {
     if (value === undefined) continue
-    if (field === 'comment') continue
+    if (field === 'comment' || field === 'files') continue
     if (field === 'summary') parts.push(`summary "${excerpt(value as string)}"`)
     else if (field === 'description') parts.push(`description (${(value as string).length} chars)`)
     else {
@@ -983,7 +1263,21 @@ export function describeChanges(changes: IssueChanges): string {
     }
   }
   if (changes.comment?.trim()) parts.push(`comment "${excerpt(changes.comment)}"`)
+  if (files.length) parts.push(`attached ${files.join(', ')}`)
   return parts.join('; ')
+}
+
+/**
+ * The comment with its attached images shown in the text, in the project's formatting
+ * (`![image][name]` in Markdown, `#image(name)` in Backlog notation). Other files only attach;
+ * a comment of files alone names them, since Backlog needs some text.
+ */
+export function withFiles(comment: string, names: string[], formatting: string): string {
+  const images = names
+    .filter((name) => attachmentKind(name) === 'image')
+    .map((name) => (formatting === 'backlog' ? `#image(${name})` : `![image][${name}]`))
+  const text = [comment.trim(), images.join('\n')].filter(Boolean).join('\n\n')
+  return text || `Attached ${names.join(', ')}`
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/
@@ -998,7 +1292,7 @@ export function changeForm(changes: IssueChanges): Query {
   const lists = { categoryIds: 'categoryId', milestoneIds: 'milestoneId', versionIds: 'versionId' } as const
   const names = { statusId: 1, resolutionId: 1, assigneeId: 1, priorityId: 1, issueTypeId: 1 } as const
   for (const [field, raw] of Object.entries(changes) as [keyof IssueChanges, string | string[] | undefined][]) {
-    if (raw === undefined || field === 'comment') continue
+    if (raw === undefined || field === 'comment' || field === 'files') continue
     if (field in lists) {
       form[lists[field as keyof typeof lists]] = (raw as string[]).map(Number)
       continue

@@ -1,6 +1,7 @@
 // The panel <-> worker contract, declared once: src/panel.tsx and src/worker.ts both read it.
 
-export type Option = { value: string; label: string }
+/** A choice; `color` (`#rrggbb`) for statuses and issue types, drawn as a dot like Backlog's. */
+export type Option = { value: string; label: string; color?: string }
 
 /** An image reference in issue text: `![alt](attachment:<id>)`, drawn as an Open preview button. */
 export const ATTACHMENT_SCHEME = 'attachment:'
@@ -150,6 +151,8 @@ export type IssueRow = {
   summary: string
   status: string
   statusId: number
+  /** The status's colour in Backlog, `#rrggbb` (custom statuses have their own). */
+  statusColor?: string | null
   priority: string
   type: string
   /** The issue type's colour in Backlog, `#rrggbb`. */
@@ -168,6 +171,10 @@ export type IssueRow = {
   resolution: string
   estimatedHours: number | null
   actualHours: number | null
+  /** For quick assign and avatars. */
+  projectId?: number
+  assigneeId?: number | null
+  createdUserId?: number | null
 }
 
 export type AttachmentKind = 'image' | 'video' | 'file'
@@ -190,6 +197,11 @@ export type PullRequest = {
   url: string
   /** The Backlog project, `Name (KEY)`; set where PRs of several projects are listed. */
   project?: string
+  projectId?: number
+  assignee?: string | null
+  assigneeId?: number | null
+  /** The issue the pull request links, when it links one. */
+  issueKey?: string | null
 }
 
 /** Backlog's pull request statuses. Only open ones are checked for conflicts. */
@@ -237,8 +249,26 @@ export type IssueFields = {
   actualHours: string
 }
 
-/** Only the fields that changed, and an optional comment Backlog records with them. */
-export type IssueChanges = Partial<IssueFields> & { comment?: string }
+/** One answer of the Backlog AI Assistant (see src/backlogAi.ts). */
+export type AiAnswer = {
+  /** Keeps the conversation: the next question in the same thread. */
+  threadId: string | null
+  /** The answer as the assistant wrote it (Markdown). */
+  text: string
+  /** Backlog tools the assistant ran (searching issues, reading a wiki page…), by name. */
+  tools: string[]
+  /** A change the assistant wants to make (add or update an issue…): approved only on the web. */
+  approval: string | null
+}
+
+/** A file waiting in the worker to go with the next comment (`IssueChanges.files`). */
+export type PendingFile = { id: string; name: string; size: number; kind: AttachmentKind }
+
+/**
+ * Only the fields that changed, and an optional comment Backlog records with them. `files`: ids of
+ * pending files, uploaded and attached to the comment; images also show in its text.
+ */
+export type IssueChanges = Partial<IssueFields> & { comment?: string; files?: string[] }
 
 /** A web link of an issue: its own page, a pull request, or one written in its text. */
 export type IssueLink = { url: string; label: string; from: 'issue' | 'pull request' | 'description' | 'comment' }
@@ -258,7 +288,7 @@ export type IssueDetail = IssueRow & {
   milestones: string[]
   categories: string[]
   attachments: { id: number; name: string; size: number; kind: AttachmentKind }[]
-  comments: { id: number; author: string; content: string; created: number }[]
+  comments: { id: number; author: string; authorId?: number; content: string; created: number }[]
   parent: LinkedIssue | null
   children: LinkedIssue[]
   related: LinkedIssue[]
@@ -310,6 +340,34 @@ declare module 'orca' {
     'issue.get': { input: { key: string }; output: IssueDetail }
     /** Saves changed fields (with the comment, if any), or only adds the comment; answers the issue again. */
     'issue.update': { input: { key: string; changes: IssueChanges }; output: IssueDetail }
+    /**
+     * Asks the Backlog AI Assistant, through the web chat in a tab of Orca's browser signed in to
+     * the space (opened, unshown, when there is none). Unofficial: Backlog has no API for it.
+     */
+    'ai.ask': { input: { question: string; threadId?: string | null }; output: AiAnswer }
+    /** Shows the space in Orca's browser with the assistant's chat open (on the thread, if given). */
+    'ai.open': { input: { threadId?: string | null }; output: { opened: true } }
+    /**
+     * Whether this user can use the assistant: from a page of the space in Orca's browser (one is
+     * opened, unshown, the first time). Remembered for a day; `recheck` looks again.
+     */
+    'ai.status': { input: { recheck?: boolean }; output: { state: 'available' | 'unavailable' | 'signedOut' | 'unknown' } }
+    /** The chats with the assistant, newest first, and how much of the month's credit is used. */
+    'ai.history': {
+      output: { threads: { id: string; title: string; updated: number }[]; usage: { state: string; percent: number | null } | null }
+    }
+    /** One chat's questions and answers, oldest first; `more`: it has older messages than shown. */
+    'ai.thread': { input: { threadId: string }; output: { turns: { question: string; answer: AiAnswer }[]; more: boolean } }
+    /** Copies an answer to the system clipboard. */
+    'ai.copy': { input: { text: string }; output: { copied: true } }
+    /** The clipboard's image (or files copied in the file manager), waiting for the next comment. */
+    'files.paste': { output: { files: PendingFile[]; message?: string } }
+    /** A file the panel already has (pasted or dropped), as base64; it waits for the next comment. */
+    'files.put': { input: { name: string; data: string }; output: PendingFile }
+    /** Files chosen in the OS's open dialog (none when cancelled), waiting for the next comment. */
+    'files.choose': { output: PendingFile[] }
+    /** Forgets pending files; pasted images are deleted. */
+    'files.drop': { input: { ids: string[] }; output: { dropped: number } }
     /** Open pull requests I created, in every project's repositories, newest first. */
     'pullRequests.mine': { output: PullRequest[] }
     /**
@@ -326,6 +384,15 @@ declare module 'orca' {
       input: { key: string; attachmentId: number }
       output: { path: string; mode: 'preview' | 'folder' | 'external' }
     }
+    /**
+     * An image attachment's bytes (base64) to show inline in the web panel, whose frame has no
+     * network; images over 8 MB are refused (open them instead).
+     */
+    'attachment.data': { input: { key: string; attachmentId: number }; output: { mime: string; data: string } }
+    /** A user's Backlog icon, to draw avatars; cached while the worker runs. */
+    'user.icon': { input: { userId: number }; output: { mime: string; data: string } }
+    /** Sets the assignee of a pull request (by `PullRequest.key`, from an earlier list); `null` clears it. */
+    'pullRequest.assign': { input: { key: string; assigneeId: number | null }; output: { ok: true } }
     'launch.options': { output: LaunchOptions }
     /** Workspaces agents were started in for an issue, newest first; gone ones are dropped. */
     'runs.get': { input: { key: string }; output: IssueRun[] }

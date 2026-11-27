@@ -17,5 +17,10 @@
       "orca-testing",
       "node"
     ]
-  }
+  },
+  "exclude": [
+    "src/web/**/*.tsx",
+    "src/web/preview.ts",
+    "src/web/vendor"
+  ]
 }
