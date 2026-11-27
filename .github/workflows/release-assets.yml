@@ -35,10 +35,11 @@ jobs:
       - name: Build archives and checksums
         run: |
           name="orca-backlog-$TAG"
-          mkdir dist
-          git archive --format=tar --prefix="$name/" "$TAG" | gzip -n -9 > "dist/$name.tar.gz"
-          git archive --format=zip --prefix="$name/" "$TAG" > "dist/$name.zip"
-          cd dist
+          # Not dist/: the repository has one (the built web panel).
+          mkdir release-assets
+          git archive --format=tar --prefix="$name/" "$TAG" | gzip -n -9 > "release-assets/$name.tar.gz"
+          git archive --format=zip --prefix="$name/" "$TAG" > "release-assets/$name.zip"
+          cd release-assets
           md5sum    "$name".* > MD5SUMS
           sha1sum   "$name".* > SHA1SUMS
           sha256sum "$name".* > SHA256SUMS
@@ -48,4 +49,4 @@ jobs:
       - name: Upload to the release
         run: |
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
-          gh release upload "$TAG" dist/* --clobber
+          gh release upload "$TAG" release-assets/* --clobber
